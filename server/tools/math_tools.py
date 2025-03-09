@@ -17,7 +17,7 @@ def register_math_tools(mcp: FastMCP) -> None:
         The MCP server instance
     """
     
-    @mcp.tool(category="Math Operations")
+    @mcp.tool()
     def add(a: int, b: int) -> int:
         """
         Add two numbers together
@@ -39,7 +39,7 @@ def register_math_tools(mcp: FastMCP) -> None:
     # Additional math tools can be added here
     # For example:
     
-    @mcp.tool(category="Math Operations")
+    @mcp.tool()
     def multiply(a: int, b: int) -> int:
         """
         Multiply two numbers

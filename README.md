@@ -4,7 +4,7 @@ A modular client for interacting with MCP (Machine Control Protocol) servers usi
 
 ## Project Structure
 
-The project is organized into several modules, each with a specific responsibility:
+The project is organised into several modules, each with a specific responsibility:
 
 ### Client Components
 - **main.py**: Entry point for the application
@@ -14,7 +14,7 @@ The project is organized into several modules, each with a specific responsibili
 - **src/utils/logger_setup.py**: Configures logging for the application
 
 ### Server Components
-The server code has been reorganized into a modular structure:
+The server code has been reorganised into a modular structure:
 
 ```
 server/
@@ -29,6 +29,21 @@ server/
 └── utils/                  # Utility functions shared across modules
     └── api_helpers.py      # Helper functions for API calls
 ```
+
+## Important Notes
+
+### Tool Decorator Usage
+
+The current version of MCP (0.2.0) used in this project supports the `@mcp.tool()` decorator without additional parameters. Tools are defined as follows:
+
+```python
+@mcp.tool()
+def add(a: int, b: int) -> int:
+    """Add two numbers together"""
+    return a + b
+```
+
+For organisational purposes, tools are grouped by module (math_tools.py, health_tools.py, etc.) rather than by categories within the decorator.
 
 ## Setup
 
@@ -63,14 +78,14 @@ python main.py server/main.py
 When you run the client with the server script, the following happens:
 
 1. The client launches the server script as a subprocess using stdio communication
-2. The server initializes, registering all tools, resources, and prompts
+2. The server initialises, registering all tools, resources, and prompts
 3. The client establishes a connection and queries the server for available tools
 4. The MCP protocol facilitates communication between client and server
 5. The client displays the tools to the LLM, which can then decide to use them
 
 ### Connection Flow Explained
 
-1. **Server Initialization**:
+1. **Server Initialisation**:
    - The `main.py` script creates a FastMCP server instance
    - It imports and registers all tools, resources, and prompts from their respective modules
    - Each module contains a `register_X` function that adds its components to the server
@@ -105,7 +120,7 @@ The server provides the following tools:
    - `fetch_weather`: Fetches weather information for a location based on coordinates
 
 4. **Resources**:
-   - `greeting://{name}`: Returns a personalized greeting
+   - `greeting://{name}`: Returns a personalised greeting
 
 ## Example Client-Server Interaction
 
@@ -121,7 +136,7 @@ async def connect_to_server(server_script_path):
     async with stdio_client(server_params) as (read, write):
         # Create client session
         async with ClientSession(read, write) as session:
-            # Initialize connection
+            # Initialise connection
             await session.initialize()
             
             # THIS IS WHERE THE CLIENT DISCOVERS TOOLS

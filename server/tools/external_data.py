@@ -19,7 +19,7 @@ def register_external_data_tools(mcp: FastMCP) -> None:
         The MCP server instance
     """
     
-    @mcp.tool(category="External Data")
+    @mcp.tool()
     async def fetch_weather(latitude: float, longitude: float) -> Dict[str, Any]:
         """
         Fetch current weather information for a location using coordinates

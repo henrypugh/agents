@@ -17,7 +17,7 @@ def register_health_tools(mcp: FastMCP) -> None:
         The MCP server instance
     """
     
-    @mcp.tool(category="Health Calculations")
+    @mcp.tool()
     def calculate_bmi(weight_kg: float, height_m: float) -> Dict[str, Any]:
         """
         Calculate BMI (Body Mass Index) given weight and height
