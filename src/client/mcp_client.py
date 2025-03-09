@@ -99,18 +99,33 @@ class MCPClient:
         args = server_config.get('args', [])
         env = server_config.get('env', {}).copy() if server_config.get('env') else {}
         
-        # For Brave Search, add the API key from .env
-        if server_name == "brave-search" and 'BRAVE_API_KEY' not in env:
+        # Handle environment variables with ${VAR} pattern
+        processed_env = {}
+        for key, value in env.items():
+            if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+                env_var_name = value[2:-1]
+                env_value = os.getenv(env_var_name)
+                if env_value:
+                    processed_env[key] = env_value
+                else:
+                    logger.warning(f"Environment variable {env_var_name} not found")
+            else:
+                processed_env[key] = value
+        
+        # Direct setting for Brave Search API key if needed
+        if server_name == "brave-search" and 'BRAVE_API_KEY' not in processed_env:
             try:
-                # Get API key from environment with decouple
-                api_key = config('BRAVE_API_KEY')
-                env['BRAVE_API_KEY'] = api_key
-                logger.info("Added Brave API key from environment")
+                api_key = config('BRAVE_API_KEY', default=None)
+                if api_key:
+                    processed_env['BRAVE_API_KEY'] = api_key
+                    logger.info("Added Brave API key from environment")
+                else:
+                    raise ValueError("BRAVE_API_KEY not found in environment")
             except Exception as e:
                 raise ValueError(f"Error loading Brave API key: {str(e)}. Please set BRAVE_API_KEY in your .env file.")
         
         # Merge with current environment
-        env = {**os.environ, **env}
+        env = {**os.environ, **processed_env}
         
         # Create server parameters
         server_params = StdioServerParameters(

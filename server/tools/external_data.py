@@ -25,21 +25,10 @@ def register_external_data_tools(mcp: FastMCP) -> None:
         The MCP server instance
     """
 
+
     @mcp.tool()
     async def brave_web_search(query: str) -> Dict[str, Any]:
-        """
-        Perform a web search using Brave Search API
-        
-        Parameters:
-        -----------
-        query : str
-            The search query
-            
-        Returns:
-        --------
-        Dict
-            Search results with web pages, news, and related information
-        """
+        """Perform a web search using Brave Search API"""
         # Get API key from environment variables
         api_key = config("BRAVE_API_KEY")
         if not api_key:
@@ -58,16 +47,18 @@ def register_external_data_tools(mcp: FastMCP) -> None:
             params = {
                 "q": query,
                 "count": 10,  # Number of results to return
-                "offset": 0,   # Starting position
-                "search_lang": "en",
-                "ui_lang": "en",
-                "safesearch": "moderate"
+                "offset": 0   # Starting position
+                # Remove these parameters as they might be causing the 422 error
+                # "search_lang": "en",
+                # "ui_lang": "en",
+                # "safesearch": "moderate"
             }
             
             # Make the API request
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, headers=headers, params=params)
-                response.raise_for_status()  # Raise exception for HTTP errors
+                response.raise_for_status()
+                
                 
                 data = response.json()
                 
