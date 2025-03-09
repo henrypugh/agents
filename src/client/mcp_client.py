@@ -5,8 +5,8 @@ from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from tool_manager import ToolManager
-from llm_client import LLMClient
+from .tool_manager import ToolManager
+from .llm_client import LLMClient
 
 logger = logging.getLogger("MCPClient")
 
