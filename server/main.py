@@ -11,8 +11,8 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("MCP Demo Server")
 
 # Import and register all tools, resources, and prompts
-from server.tools import register_all_tools
-from server.resources import register_all_resources
+from tools import register_all_tools
+from resources import register_all_resources
 
 # Register components with the MCP server
 register_all_tools(mcp)

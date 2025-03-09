@@ -7,7 +7,7 @@ This module contains tools for fetching and processing external data from APIs.
 from mcp.server.fastmcp import FastMCP
 import httpx
 from typing import Dict, Any
-from server.utils.api_helpers import process_weather_data
+from utils.api_helpers import process_weather_data
 
 def register_external_data_tools(mcp: FastMCP) -> None:
     """

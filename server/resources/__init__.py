@@ -7,7 +7,7 @@ This module imports and exports all resource functions to be registered with the
 from mcp.server.fastmcp import FastMCP
 
 # Import all resource modules
-from server.resources.greetings import register_greeting_resources
+from resources.greetings import register_greeting_resources
 
 def register_all_resources(mcp: FastMCP) -> None:
     """

@@ -7,9 +7,9 @@ This module imports and exports all tool functions to be registered with the MCP
 from mcp.server.fastmcp import FastMCP
 
 # Import all tool modules
-from server.tools.math_tools import register_math_tools
-from server.tools.health_tools import register_health_tools
-from server.tools.external_data import register_external_data_tools
+from tools.math_tools import register_math_tools
+from tools.health_tools import register_health_tools
+from tools.external_data import register_external_data_tools
 
 def register_all_tools(mcp: FastMCP) -> None:
     """
