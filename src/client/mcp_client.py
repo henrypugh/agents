@@ -19,9 +19,10 @@ class MCPClient:
     
     def __init__(self, model: str = "google/gemini-2.0-flash-001"):
         # Initialize session and client objects
-        self.session: Optional[ClientSession] = None
+        self.sessions = {}  # Dictionary to store multiple server sessions
         self.exit_stack = AsyncExitStack()
         self.llm_client = LLMClient(model)
+        self.primary_session = None  # The main server session
         logger.info("MCPClient initialized")
 
     async def connect_to_server(self, server_script_path: str) -> None:
@@ -48,15 +49,25 @@ class MCPClient:
         
         # Connect to server
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
-        self.stdio, self.write = stdio_transport
-        self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
+        stdio, write = stdio_transport
+        session = await self.exit_stack.enter_async_context(ClientSession(stdio, write))
         
-        await self.session.initialize()
+        await session.initialize()
+        
+        # Store as primary session if it's the first one
+        if self.primary_session is None:
+            self.primary_session = session
+            
+        # Store in sessions dictionary with a meaningful key
+        server_name = os.path.basename(server_script_path).split('.')[0]
+        self.sessions[server_name] = session
         
         # List available tools
-        response = await self.session.list_tools()
+        response = await session.list_tools()
         tools = response.tools
-        logger.info(f"Connected to server with tools: {[tool.name for tool in tools]}")
+        logger.info(f"Connected to server {server_name} with tools: {[tool.name for tool in tools]}")
+        
+        return server_name  # Return server name for reference
 
     async def connect_to_configured_server(self, server_name: str, config_path: str = "server_config.json") -> None:
         """Connect to an MCP server defined in configuration
@@ -99,7 +110,7 @@ class MCPClient:
         args = server_config.get('args', [])
         env = server_config.get('env', {}).copy() if server_config.get('env') else {}
         
-        # Handle environment variables with ${VAR} pattern
+        # Process environment variables - resolve ${VAR} syntax
         processed_env = {}
         for key, value in env.items():
             if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
@@ -107,14 +118,16 @@ class MCPClient:
                 env_value = os.getenv(env_var_name)
                 if env_value:
                     processed_env[key] = env_value
+                    logger.info(f"Resolved env var {env_var_name} for {key}")
                 else:
                     logger.warning(f"Environment variable {env_var_name} not found")
             else:
                 processed_env[key] = value
         
-        # Direct setting for Brave Search API key if needed
+        # For Brave Search, add the API key from .env if needed
         if server_name == "brave-search" and 'BRAVE_API_KEY' not in processed_env:
             try:
+                # Get API key from environment with decouple
                 api_key = config('BRAVE_API_KEY', default=None)
                 if api_key:
                     processed_env['BRAVE_API_KEY'] = api_key
@@ -136,34 +149,56 @@ class MCPClient:
         
         # Connect to server
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
-        self.stdio, self.write = stdio_transport
-        self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
+        stdio, write = stdio_transport
+        session = await self.exit_stack.enter_async_context(ClientSession(stdio, write))
         
-        await self.session.initialize()
+        await session.initialize()
+        
+        # Store as primary session if it's the first one
+        if self.primary_session is None:
+            self.primary_session = session
+            
+        # Store in sessions dictionary
+        self.sessions[server_name] = session
         
         # List available tools
-        response = await self.session.list_tools()
+        response = await session.list_tools()
         tools = response.tools
         logger.info(f"Connected to server {server_name} with tools: {[tool.name for tool in tools]}")
 
     async def process_query(self, query: str) -> str:
-        """Process a query using LLM and available tools"""
-        if not self.session:
-            raise RuntimeError("Not connected to an MCP server. Call connect_to_server first.")
+        """Process a query using LLM and available tools from all connected servers
+        
+        Args:
+            query: The user's query
+            
+        Returns:
+            The generated response
+            
+        Raises:
+            RuntimeError: If no servers are connected
+        """
+        if not self.sessions:
+            raise RuntimeError("Not connected to any MCP servers. Connect to at least one server first.")
             
         logger.info(f"Processing query: {query}")
         
         # Initialize conversation with user query
         messages = [{"role": "user", "content": query}]
         
-        # Get available tools
-        available_tools = await ToolManager.get_available_tools(self.session)
+        # Get available tools from all connected servers
+        all_tools = []
+        for server_name, session in self.sessions.items():
+            server_tools = await ToolManager.get_available_tools(session, server_name)
+            all_tools.extend(server_tools)
+        
+        logger.info(f"Collected {len(all_tools)} tools from {len(self.sessions)} servers")
         
         # Get initial response from LLM
-        response = await self.llm_client.get_completion(messages, available_tools)
+        response = await self.llm_client.get_completion(messages, all_tools)
         
         # Process response and handle any tool calls
-        return await self._process_llm_response(response, messages, available_tools)
+        return await self._process_llm_response(response, messages, all_tools)
         
     async def _process_llm_response(
         self, 
@@ -212,40 +247,51 @@ class MCPClient:
         available_tools: List[Dict[str, Any]],
         final_text: List[str]
     ) -> None:
-        """Process a single tool call"""
+        """Process a single tool call, determining which server to use"""
         logger.debug(f"Processing tool call: {tool_call}")
         
-        # Execute the tool call
-        tool_result = await ToolManager.execute_tool_call(self.session, tool_call)
-        
-        # Add tool call info to output
+        # Get tool name and find which server it belongs to
         tool_name = tool_call.function.name
+        server_name = None
+        
+        # Find the matching tool and get its server
+        for tool in available_tools:
+            if tool["function"]["name"] == tool_name:
+                if "metadata" in tool["function"] and "server" in tool["function"]["metadata"]:
+                    server_name = tool["function"]["metadata"]["server"]
+                break
+        
+        if not server_name or server_name not in self.sessions:
+            error_msg = f"Error: Can't determine which server handles tool '{tool_name}'"
+            logger.error(error_msg)
+            final_text.append(error_msg)
+            return
+            
+        session = self.sessions[server_name]
+        
+        # Execute the tool call on the appropriate server
         tool_args_raw = tool_call.function.arguments
-        final_text.append(f"[Calling tool {tool_name} with args {tool_args_raw}]")
+        final_text.append(f"[Calling tool {tool_name} from {server_name} server with args {tool_args_raw}]")
         
-        # Add result to output
-        result_text = tool_result.get('result_text', '')
-        if result_text:
-            final_text.append(f"Tool result: {result_text}")
-        
-        # Update message history with tool call
-        self._update_message_history_sync(messages, tool_call, tool_result)
-        
-        # Get follow-up response from LLM
-        await self._get_follow_up_response(messages, available_tools, final_text)
-        
-    async def _handle_tool_calls(
-        self, 
-        tool_calls: List[Any], 
-        messages: List[Dict[str, Any]], 
-        available_tools: List[Dict[str, Any]],
-        final_text: List[str]
-    ) -> None:
-        """Handle tool calls from the LLM response"""
-        logger.info(f"Processing {len(tool_calls)} tool calls")
-        
-        for tool_call in tool_calls:
-            await self._process_single_tool_call(tool_call, messages, available_tools, final_text)
+        try:
+            # Execute the tool
+            tool_result = await ToolManager.execute_tool_call(session, tool_call)
+            
+            # Add result to output
+            result_text = tool_result.get('result_text', '')
+            if result_text:
+                final_text.append(f"Tool result: {result_text}")
+            
+            # Update message history with tool call
+            self._update_message_history_sync(messages, tool_call, tool_result)
+            
+            # Get follow-up response from LLM
+            await self._get_follow_up_response(messages, available_tools, final_text)
+            
+        except Exception as e:
+            error_msg = f"Error executing tool on {server_name} server: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            final_text.append(error_msg)
             
     def _update_message_history_sync(
         self,
@@ -320,12 +366,20 @@ class MCPClient:
 
     async def chat_loop(self) -> None:
         """Run an interactive chat loop"""
-        if not self.session:
-            raise RuntimeError("Not connected to an MCP server. Call connect_to_server first.")
+        if not self.sessions:
+            raise RuntimeError("Not connected to any MCP server. Connect to at least one server first.")
             
         logger.info("Starting chat loop")
         print("\nMCP Client Started!")
-        print("Type your queries or 'quit' to exit.")
+        
+        # Print connected servers and their tools
+        print(f"Connected to {len(self.sessions)} servers:")
+        for server_name, session in self.sessions.items():
+            tools_response = await session.list_tools()
+            tool_names = [tool.name for tool in tools_response.tools]
+            print(f"- {server_name}: {', '.join(tool_names)}")
+            
+        print("\nType your queries or 'quit' to exit.")
         
         while True:
             try:

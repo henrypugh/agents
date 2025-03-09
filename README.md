@@ -1,28 +1,34 @@
 # MCP Client - Advanced Multi-Server Architecture
 
-An advanced, modular client for interacting with Model Context Protocol (MCP) servers using OpenRouter's LLM API services. This project demonstrates a sophisticated approach to AI tool integration using MCP's server-to-server communication capabilities.
-
+An advanced, modular client for interacting with Model Context Protocol (MCP) servers using OpenRouter's LLM API services. This project demonstrates a sophisticated approach to AI tool integration using direct client-to-multiple-servers communication.
 
 ## Key Features
 
 - **Multiple Server Integration**: Connect to both local and remote MCP servers simultaneously
-- **Dynamic Server Connections**: Connect to additional MCP servers during runtime
-- **Server-to-Server Communication**: Execute tools across a network of specialized servers
+- **Direct Server Access**: Client connects directly to each specialized server
+- **Unified Tool Interface**: Present tools from all servers to the LLM with clear server attribution
 - **API Independence**: No direct API dependencies in core code - all external APIs are handled through MCP servers
 - **Modular Architecture**: Clean separation between client, LLM integration, and tool management
 
 ## Architecture Overview
 
-This project implements an advanced MCP architecture pattern that combines multiple specialized MCP servers into a unified experience:
+This project implements an advanced MCP architecture pattern that allows one client to connect to multiple specialized MCP servers simultaneously:
 
 ```
-┌─────────────┐       ┌───────────────────────┐       ┌───────────────────────────┐       ┌─────────────┐
-│             │       │                       │       │                           │       │             │
-│  LLM Client │◄─────►│  Primary MCP Server   │◄─────►│  Specialized MCP Servers  │◄─────►│  External   │
-│ (OpenRouter)│       │  (Local Server)       │       │  (Brave Search, etc.)     │       │  APIs       │
-│             │       │                       │       │                           │       │             │
-└─────────────┘       └───────────────────────┘       └───────────────────────────┘       └─────────────┘
-                           MCP Protocol                    MCP Protocol                    HTTP API Calls
+                          ┌───────────────────────┐
+                     ┌───►│  Local MCP Server     │
+                     │    │  (Math, Health tools) │
+                     │    └───────────────────────┘
+┌─────────────┐      │    
+│             │      │    ┌───────────────────────┐       ┌─────────────┐
+│  LLM Client ├──────┼───►│  Brave Search Server  │──────►│  Brave API  │
+│ (OpenRouter)│      │    │                       │       │             │
+│             │      │    └───────────────────────┘       └─────────────┘
+└─────────────┘      │    
+                     │    ┌───────────────────────┐
+                     └───►│  Other MCP Servers    │
+                          │  (As needed)          │
+                          └───────────────────────┘
 ```
 
 ### Components
@@ -45,43 +51,30 @@ This project implements an advanced MCP architecture pattern that combines multi
    - `@modelcontextprotocol/server-brave-search`: Official Brave Search MCP server
    - Additional servers as needed (defined in `server_config.json`)
 
-## Dynamic Server Connection Architecture
+## Multi-Server Client Architecture
 
-A key innovation in this project is the ability to connect to additional MCP servers during runtime. This is accomplished through specialized connector tools:
+The client intelligently manages connections to multiple MCP servers and routes tool calls to the appropriate server:
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                      │
-│                               Primary MCP Server                                      │
-│                                                                                      │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐  │
-│  │             │  │             │  │             │  │                             │  │
-│  │  Math Tools │  │Health Tools │  │ Local Data  │  │  Server Connector Tools     │  │
-│  │             │  │             │  │   Tools     │  │                             │  │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────────────────────┘  │
-│                                                                │                      │
-└──────────────────────────────────────────────────────────────┬┘                      │
-                                                               │                        │
-                                                               ▼                        │
-                                      ┌───────────────────────────────────────────┐     │
-                                      │                                           │     │
-                                      │        Dynamic MCP Server Connection      │     │
-                                      │                                           │     │
-                                      └─┬─────────────────────┬──────────────────┘     │
-                                        │                     │                         │
-                                        ▼                     ▼                         │
-                         ┌─────────────────────┐  ┌─────────────────────┐              │
-                         │                     │  │                     │              │
-                         │   Brave Search      │  │   Other External    │              │
-                         │   MCP Server        │  │   MCP Servers       │              │
-                         │                     │  │                     │              │
-                         └─────────────────────┘  └─────────────────────┘              │
-                                                                                        │
-┌────────────────────────────────────────────────────────────────────────────────────┐  │
-│                                                                                    │  │
-│                                  LLM (OpenRouter)                                  │◄─┘
-│                                                                                    │
-└────────────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                       │
+│                                   MCP Client                                          │
+│                                                                                       │
+│  ┌────────────────┐  ┌─────────────────┐  ┌────────────────────┐  ┌──────────────┐   │
+│  │                │  │                 │  │                    │  │              │   │
+│  │ Session Router │  │ Tool Collection │  │ Server Connections │  │ LLM Client   │   │
+│  │                │  │                 │  │                    │  │              │   │
+│  └────────────────┘  └─────────────────┘  └────────────────────┘  └──────────────┘   │
+│                                                                                       │
+└───────┬───────────────────────┬────────────────────────┬───────────────────────┬─────┘
+        │                       │                        │                       │
+        ▼                       ▼                        ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐     ┌─────────────────┐
+│                 │    │                 │    │                 │     │                 │
+│ Local Server    │    │ Brave Search    │    │ Other Server    │     │    OpenRouter   │
+│ (MCP Protocol)  │    │ (MCP Protocol)  │    │ (MCP Protocol)  │     │    LLM API      │
+│                 │    │                 │    │                 │     │                 │
+└─────────────────┘    └─────────────────┘    └─────────────────┘     └─────────────────┘
 ```
 
 ## Setup
@@ -110,101 +103,111 @@ A key innovation in this project is the ability to connect to additional MCP ser
 
 ## Usage
 
-### Running the Local MCP Server
+### Connecting to Multiple Servers
 
-The most powerful setup is to run your local MCP server and let it dynamically connect to other specialized servers:
+The most powerful setup is to connect to multiple servers simultaneously:
 
 ```bash
-python main.py server/main.py
+# Connect to both your local server and the Brave Search server
+python main.py server/main.py --server brave-search
 ```
 
-This starts the primary MCP server with all local tools, including the server connector tools.
+### Connecting to Individual Servers
 
-### Direct Connection to External Servers
-
-You can also connect directly to specific external servers:
+You can also connect to servers individually:
 
 ```bash
-# Connect directly to the Brave Search server
+# Connect only to your local server
+python main.py server/main.py
+
+# Connect only to the Brave Search server
 python main.py --server brave-search
 ```
 
-## Server-to-Server MCP Communication
+### Connecting to Multiple External Servers
 
-A unique feature of this project is the ability for one MCP server to connect to another. The sequence diagram below illustrates this process:
+Connect to multiple external configured servers:
+
+```bash
+# Connect to multiple configured servers
+python main.py --server brave-search --server another-server
+```
+
+## Client-to-Multiple-Servers Communication
+
+Unlike server-to-server communication (which has concurrency issues), this implementation has the client maintain separate connections to each server and route tool calls appropriately:
 
 ```mermaid
 sequenceDiagram
     participant User
     participant LLM as LLM (OpenRouter)
+    participant Client as MCP Client
     participant LocalServer as Local MCP Server
-    participant BraveServer as Brave Search MCP Server
+    participant BraveServer as Brave Search Server
     participant BraveAPI as Brave Search API
 
-    User->>LocalServer: User Query
-    LocalServer->>LLM: Forward Query
-    LLM->>LocalServer: Request to search for information
+    User->>Client: User Query
+    Client->>LLM: Forward Query with All Tools
+    LLM->>Client: Request to use brave_web_search
     
-    Note over LocalServer: Decides to use Brave Search
-    
-    LocalServer->>BraveServer: connect_to_server("brave-search")
-    BraveServer->>LocalServer: Connection established
-    LocalServer->>LLM: Connection success, tools available
-    
-    LLM->>LocalServer: execute_external_tool("brave-search", "brave_web_search", {...})
-    LocalServer->>BraveServer: call_tool("brave_web_search", {...})
+    Client->>BraveServer: call_tool("brave_web_search", {...})
     BraveServer->>BraveAPI: HTTP API Request
     BraveAPI->>BraveServer: HTTP Response
-    BraveServer->>LocalServer: Tool execution result
-    LocalServer->>LLM: Tool result
-    LLM->>User: Formatted response
+    BraveServer->>Client: Tool execution result
+    
+    Client->>LLM: Send tool result
+    LLM->>Client: Follow-up response with request to use local tool
+    
+    Client->>LocalServer: call_tool("local_tool", {...})
+    LocalServer->>Client: Tool execution result
+    
+    Client->>LLM: Send tool result
+    LLM->>Client: Final response
+    Client->>User: Display formatted response
 ```
 
 ## Tool Categories
 
-The server provides the following tools:
+The various servers provide the following tools:
 
-1. **Math Operations**:
-   - `add`: Adds two numbers
-   - `multiply`: Multiplies two numbers
+1. **Local Server Tools**:
+   - **Math Operations**:
+     - `add`: Adds two numbers
+     - `multiply`: Multiplies two numbers
+   - **Health Calculations**:
+     - `calculate_bmi`: Calculates BMI from weight (kg) and height (m)
+   - **External Data**:
+     - `fetch_weather`: Fetches weather information for a location based on coordinates
+     - `fetch_next_three_fixtures`: Fetches upcoming football fixtures
 
-2. **Health Calculations**:
-   - `calculate_bmi`: Calculates BMI from weight (kg) and height (m)
-
-3. **External Data**:
-   - `fetch_weather`: Fetches weather information for a location based on coordinates
-   - `fetch_next_three_fixtures`: Fetches upcoming football fixtures
-
-4. **Server Connection Tools**:
-   - `connect_to_server`: Dynamically connects to external MCP servers
-   - `execute_external_tool`: Executes tools on connected servers
-   - `get_external_server_tools`: Lists available tools on connected servers
-   - `disconnect_server`: Disconnects from an external server
-   - `get_available_servers`: Lists available servers in configuration
-
-5. **External MCP Server Tools** (via server connection):
-   - `brave_web_search`: Performs web searches (from Brave Search server)
-   - `brave_local_search`: Searches for local businesses (from Brave Search server)
+2. **Brave Search Server Tools**:
+   - `brave_web_search`: Performs web searches
+   - `brave_local_search`: Searches for local businesses
 
 ## Example Interaction
 
-Here's an example of how to use the server connection feature:
+Here's an example of using tools from multiple servers:
 
 ```
 Query: Can you find information about AVFC's upcoming fixtures and then search for news about their latest signing?
 
-[Using local tool fetch_next_three_fixtures to get fixtures]
-[Connecting to brave-search MCP server]
-[Using brave_web_search from brave-search server to find news]
-[Disconnecting from brave-search server]
+I'll help you find information about Aston Villa FC's upcoming fixtures and then search for news about their latest signing.
 
-Aston Villa Fixtures:
-15 Mar 2025, 15:00: Aston Villa vs Crystal Palace at Villa Park
+[Calling tool fetch_next_three_fixtures from main server with args {"league_id": 39, "season": 2024, "team_id": 66}]
+Tool result: 15 Mar 2025, 15:00: Aston Villa vs Crystal Palace at Villa Park
 22 Mar 2025, 15:00: Manchester City vs Aston Villa at Etihad Stadium
 02 Apr 2025, 20:00: Aston Villa vs Newcastle at Villa Park
 
-Recent Transfer News:
-I found that Aston Villa's latest signing is [Player Name], who joined from [Previous Club] for a reported £[Amount]m. The 24-year-old striker has signed a 5-year contract and is expected to compete for a starting position alongside Ollie Watkins.
+[Calling tool brave_web_search from brave-search server with args {"query": "Aston Villa FC latest signing 2025"}]
+Tool result: (News search results about Aston Villa's latest signing)
+
+Based on the information I found, Aston Villa's upcoming fixtures are:
+
+1. March 15, 2025, 15:00: Aston Villa vs Crystal Palace at Villa Park
+2. March 22, 2025, 15:00: Manchester City vs Aston Villa at Etihad Stadium
+3. April 2, 2025, 20:00: Aston Villa vs Newcastle at Villa Park
+
+Regarding their latest signing, according to recent news, Aston Villa has signed [Player Name] from [Previous Club] for approximately £[Amount]m. The [Position] player has signed a [Duration] contract and is expected to strengthen the team's [Area] ahead of these important fixtures.
 ```
 
 ## Server Configuration
@@ -268,6 +271,26 @@ def register_example_tools(mcp: FastMCP) -> None:
         return f"Result: {param1} - {param2}"
 ```
 
+## Adding New Servers
+
+To add a new server to the configuration:
+
+1. Create a new entry in `server_config.json`:
+   ```json
+   "my-new-server": {
+     "command": "your-command",
+     "args": ["--arg1", "value1"],
+     "env": {
+       "API_KEY": "your-api-key"
+     }
+   }
+   ```
+
+2. Connect to it along with other servers:
+   ```bash
+   python main.py server/main.py --server my-new-server --server brave-search
+   ```
+
 ## Debugging
 
 Detailed logging is provided for debugging and development. The logs include:
@@ -283,9 +306,9 @@ To view more detailed logs, set the logging level to DEBUG in `src/utils/logger_
 
 This project demonstrates several advanced MCP features:
 
-1. **Server-to-Server Communication**: One MCP server connecting to another
-2. **Dynamic Tool Discovery**: Finding and using tools from connected servers
-3. **Resource Sharing**: Accessing resources across server boundaries
+1. **Client-to-Multiple-Servers Communication**: Connecting to and using tools from multiple specialized servers
+2. **Dynamic Tool Discovery**: Collecting tools from multiple servers with server attribution
+3. **Tool Routing**: Correctly routing tool calls to the appropriate server
 4. **Environment Variable Management**: Properly handling environment variables for servers
 
 ## Future Enhancements
@@ -293,7 +316,7 @@ This project demonstrates several advanced MCP features:
 Planned enhancements for this project include:
 
 1. **Tool Authorization**: Adding authorization controls for external tools
-2. **Caching Layer**: Implementing caching for external server responses
+2. **Caching Layer**: Implementing caching for server responses
 3. **Tool Pipelines**: Creating pipelines of tools across multiple servers
 4. **Prompt Templates**: Adding support for MCP prompt templates
 5. **Resource Integration**: Better integration of MCP resources

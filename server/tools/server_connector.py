@@ -8,19 +8,17 @@ import json
 import os
 import logging
 import asyncio
-import httpx
 from typing import Dict, List, Any, Optional
 from contextlib import AsyncExitStack
+from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP, Context
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from pydantic import Field
 
 logger = logging.getLogger("ServerConnector")
 
-# Global storage for server connections
-# Maps server_name -> {session, stack, tools}
+# Global storage for server connections - simplified structure
 _server_connections = {}
 
 def register_server_connector_tools(mcp: FastMCP) -> None:
@@ -39,7 +37,7 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
         Connect to an external MCP server on demand
         
         This tool dynamically connects to another MCP server when needed, making its tools
-        available to the LLM. Use this when you need specialised functionality like web search.
+        available to the LLM. Use this when you need specialised functionality.
         
         Parameters:
         -----------
@@ -52,27 +50,38 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             Information about the connected server and available tools
         """
         # Check if server is already connected
-        if server_name in _server_connections and _server_connections[server_name]['session']:
-            tools = _server_connections[server_name]['tools']
-            ctx.info(f"Server {server_name} already connected with {len(tools)} tools")
-            return {
-                "status": "already_connected",
-                "server": server_name,
-                "tools": [t["function"]["name"] for t in tools]
-            }
-            
+        if server_name in _server_connections:
+            try:
+                session = _server_connections[server_name].get('session')
+                if session:
+                    # Test the connection is still valid
+                    tools_resp = await session.list_tools()
+                    tool_names = [t.name for t in tools_resp.tools]
+                    ctx.info(f"Server {server_name} already connected with {len(tool_names)} tools")
+                    return {
+                        "status": "already_connected",
+                        "server": server_name,
+                        "tools": tool_names
+                    }
+            except Exception as e:
+                ctx.info(f"Existing connection to {server_name} is invalid: {e}. Will reconnect.")
+                # Connection is no longer valid, remove it
+                if server_name in _server_connections:
+                    await _safe_cleanup_connection(server_name)
+        
         # Load server configurations
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "server_config.json")
         try:
             with open(config_path, 'r') as f:
                 server_config_json = json.load(f)
                 
-            # Check for mcpServers structure (Claude Desktop format)
+            # Handle different config formats
             if "mcpServers" in server_config_json:
                 servers_config = server_config_json["mcpServers"]
             else:
                 servers_config = server_config_json
         except (json.JSONDecodeError, FileNotFoundError) as e:
+            ctx.info(f"Failed to load server configuration: {e}")
             return {
                 "status": "error",
                 "error": f"Failed to load server configuration: {str(e)}"
@@ -80,6 +89,7 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             
         # Check if requested server exists in config
         if server_name not in servers_config:
+            ctx.info(f"Server '{server_name}' not found in configuration")
             return {
                 "status": "error",
                 "error": f"Server '{server_name}' not found in configuration"
@@ -89,92 +99,144 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
         
         # Validate required fields
         if 'command' not in server_config:
+            ctx.info(f"Server '{server_name}' configuration missing 'command' field")
             return {
                 "status": "error",
                 "error": f"Server '{server_name}' configuration missing 'command' field"
             }
             
         try:
-            # Import decouple at the top of your file
-            from decouple import config
+            # Import here to avoid circular dependencies
+            from decouple import config as config_decouple
             
-            # Create stack for resource management
-            stack = AsyncExitStack()
+            # Create new connection
+            ctx.info(f"Creating new connection to {server_name}")
             
             # Set up server parameters
+            command = server_config['command']
             args = server_config.get('args', [])
             env = server_config.get('env', {}).copy() if server_config.get('env') else {}
             
-            # For Brave Search, handle API key specially
-            if server_name == "brave-search" and 'BRAVE_API_KEY' not in env:
-                # Try to get from environment using decouple
+            # Process environment variables - resolve ${VAR} syntax
+            processed_env = {}
+            for key, value in env.items():
+                if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+                    env_var_name = value[2:-1]
+                    env_value = os.getenv(env_var_name)
+                    if env_value:
+                        processed_env[key] = env_value
+                        ctx.info(f"Resolved env var {env_var_name} for {key}")
+                    else:
+                        ctx.info(f"Warning: Environment variable {env_var_name} not found")
+                else:
+                    processed_env[key] = value
+            
+            # Special handling for Brave Search
+            if server_name == "brave-search" and 'BRAVE_API_KEY' not in processed_env:
                 try:
-                    api_key = config('BRAVE_API_KEY', cast=str)
-                    env['BRAVE_API_KEY'] = api_key
-                    ctx.info("Added Brave API key from environment")
+                    api_key = config_decouple('BRAVE_API_KEY', default=None)
+                    if api_key:
+                        processed_env['BRAVE_API_KEY'] = api_key
+                        ctx.info("Added Brave API key from environment")
+                    else:
+                        return {
+                            "status": "error",
+                            "error": "BRAVE_API_KEY not found in environment"
+                        }
                 except Exception as e:
+                    ctx.info(f"Error loading API key: {e}")
                     return {
                         "status": "error",
-                        "error": f"BRAVE_API_KEY not found or invalid: {str(e)}"
+                        "error": f"Error loading API key: {str(e)}"
                     }
             
             # Merge with current environment
-            env = {**os.environ, **env}
+            merged_env = {**os.environ, **processed_env}
             
-            ctx.info(f"Connecting to server {server_name}")
+            # Prepare server command - ensure we have full path
+            import shutil
+            command_path = shutil.which(command)
+            if not command_path:
+                ctx.info(f"Command '{command}' not found in PATH")
+                return {
+                    "status": "error",
+                    "error": f"Command '{command}' not found in PATH"
+                }
             
-            # Prepare server command
-            command = server_config['command']
+            ctx.info(f"Starting server process: {command_path} {' '.join(args)}")
+            
+            # Create server parameters
             server_params = StdioServerParameters(
-                command=command,
+                command=command_path,
                 args=args,
-                env=env
+                env=merged_env
             )
             
-            # Connect to server
-            stdio_transport = await stack.enter_async_context(stdio_client(server_params))
-            read, write = stdio_transport
-            session = await stack.enter_async_context(ClientSession(read, write))
+            # Use new stack for each connection
+            stack = AsyncExitStack()
             
-            # Initialize the connection
-            await session.initialize()
-            
-            # List available tools
-            response = await session.list_tools()
-            tools = await _convert_tools_to_openai_format(response.tools)
-            
-            # Store connection for future use
-            _server_connections[server_name] = {
-                'session': session,
-                'stack': stack,
-                'tools': tools
-            }
-            
-            tool_names = [t["function"]["name"] for t in tools]
-            ctx.info(f"Successfully connected to {server_name} with tools: {tool_names}")
-            
-            return {
-                "status": "connected",
-                "server": server_name,
-                "tools": tool_names,
-                "toolCount": len(tools)
-            }
-            
-        except Exception as e:
-            ctx.info(f"Error connecting to server {server_name}: {str(e)}")
-            
-            # Clean up any partially established connection
-            if server_name in _server_connections:
-                if 'stack' in _server_connections[server_name]:
-                    try:
-                        await _server_connections[server_name]['stack'].aclose()
-                    except Exception:
-                        pass
-                del _server_connections[server_name]
+            # Connect to server with timeouts and retries
+            try:
+                stdio_transport = await asyncio.wait_for(
+                    stack.enter_async_context(stdio_client(server_params)),
+                    timeout=30.0  # 30 second timeout
+                )
+                read, write = stdio_transport
                 
+                session = await asyncio.wait_for(
+                    stack.enter_async_context(ClientSession(read, write)),
+                    timeout=10.0  # 10 second timeout
+                )
+                
+                # Initialize the connection
+                await asyncio.wait_for(
+                    session.initialize(),
+                    timeout=10.0  # 10 second timeout
+                )
+                
+                ctx.info(f"Successfully initialized session with {server_name}")
+                
+                # List available tools
+                tools_response = await session.list_tools()
+                tool_names = [t.name for t in tools_response.tools]
+                ctx.info(f"Retrieved {len(tool_names)} tools from {server_name}: {tool_names}")
+                
+                # Create a simplified connection record
+                _server_connections[server_name] = {
+                    'session': session,
+                    'stack': stack,
+                    'tool_names': tool_names,
+                    'connected_at': datetime.now().isoformat()
+                }
+                
+                return {
+                    "status": "connected",
+                    "server": server_name,
+                    "tools": tool_names,
+                    "toolCount": len(tool_names)
+                }
+                
+            except asyncio.TimeoutError:
+                await stack.aclose()
+                ctx.info(f"Timeout connecting to server {server_name}")
+                return {
+                    "status": "error",
+                    "error": f"Timeout connecting to server {server_name}"
+                }
+                
+            except Exception as e:
+                ctx.info(f"Error connecting to server {server_name}: {e}")
+                await stack.aclose()
+                return {
+                    "status": "error",
+                    "error": f"Failed to connect to server: {str(e)}"
+                }
+                
+        except Exception as e:
+            ctx.info(f"Unexpected error connecting to {server_name}: {e}")
             return {
                 "status": "error",
-                "error": f"Failed to connect to server: {str(e)}"
+                "error": f"Unexpected error: {str(e)}"
             }
     
     @mcp.tool()
@@ -203,79 +265,93 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
         Dict
             Result of the tool execution
         """
-        # Check if server is connected
-        if server_name not in _server_connections or not _server_connections[server_name]['session']:
+        ctx.info(f"Executing external tool: {tool_name} on server {server_name}")
+        
+        # Validate server connection
+        if server_name not in _server_connections:
+            ctx.info(f"Server {server_name} not found in connections")
             return {
                 "status": "error",
                 "error": f"Server {server_name} is not connected. Use connect_to_server first."
             }
-            
-        session = _server_connections[server_name]['session']
         
-        try:
-            # Parse JSON string to dict
-            ctx.info(f"Parsing tool args JSON: {tool_args_json}")
-            try:
-                tool_args = json.loads(tool_args_json)
-            except json.JSONDecodeError as e:
-                ctx.info(f"Error parsing JSON: {str(e)}")
-                return {
-                    "status": "error",
-                    "error": f"Invalid JSON in tool_args_json: {str(e)}"
-                }
-            
-            # Execute the tool with proper error handling
-            ctx.info(f"Executing tool {tool_name} on server {server_name} with args: {tool_args}")
-            
-            try:
-                # Execute the tool call
-                result = await session.call_tool(tool_name, tool_args)
-                
-                # Process the result
-                result_text = ""
-                if hasattr(result, 'content'):
-                    if isinstance(result.content, list):
-                        for content_item in result.content:
-                            if hasattr(content_item, 'text'):
-                                result_text += content_item.text
-                    elif isinstance(result.content, str):
-                        result_text = result.content
-                    else:
-                        result_text = str(result.content)
-                else:
-                    result_text = str(result)
-                
-                ctx.info(f"Tool execution successful, result: {result_text[:100]}...")
-                
-                return {
-                    "status": "success",
-                    "server": server_name,
-                    "tool": tool_name,
-                    "result": result_text
-                }
-            except Exception as e:
-                ctx.info(f"Error during tool execution: {str(e)}")
-                import traceback
-                tb = traceback.format_exc()
-                ctx.info(f"Traceback: {tb}")
-                
-                return {
-                    "status": "error",
-                    "error": f"Tool execution failed: {str(e)}",
-                    "traceback": tb
-                }
-                
-        except Exception as e:
-            ctx.info(f"Error executing tool {tool_name} on server {server_name}: {str(e)}")
-            import traceback
-            tb = traceback.format_exc()
-            
+        conn_data = _server_connections[server_name]
+        if 'session' not in conn_data or conn_data['session'] is None:
+            ctx.info(f"Session for server {server_name} is missing or invalid")
             return {
-                "status": "error", 
-                "error": f"Failed to execute tool: {str(e)}",
-                "traceback": tb
+                "status": "error",
+                "error": f"Invalid session for server {server_name}. Try reconnecting."
             }
         
+        session = conn_data['session']
+        
+        # Parse JSON with error handling
+        try:
+            tool_args = json.loads(tool_args_json)
+            ctx.info(f"Parsed tool args: {tool_args}")
+        except json.JSONDecodeError as e:
+            ctx.info(f"JSON parse error: {e}")
+            return {
+                "status": "error",
+                "error": f"Invalid JSON: {str(e)}"
+            }
+        
+        # Execute tool with timeout and error handling
+        try:
+            # For Brave Search, simplify arguments if needed
+            if server_name == "brave-search" and tool_name == "brave_web_search" and "query" in tool_args:
+                # Keep it simple
+                tool_args = {"query": tool_args["query"]}
+                ctx.info(f"Simplified args for brave_web_search: {tool_args}")
+
+            # Execute with timeout
+            ctx.info(f"Calling tool on external server: {tool_name}")
+            result = await asyncio.wait_for(
+                session.call_tool(tool_name, tool_args),
+                timeout=30.0  # 30 second timeout
+            )
+            
+            # Process result carefully
+            result_text = ""
+            if hasattr(result, 'content'):
+                # Handle different content types
+                if isinstance(result.content, list):
+                    for item in result.content:
+                        if hasattr(item, 'text'):
+                            result_text += item.text
+                        else:
+                            result_text += str(item)
+                elif isinstance(result.content, str):
+                    result_text = result.content
+                else:
+                    result_text = str(result.content)
+            else:
+                result_text = str(result)
+            
+            preview = result_text[:100] + "..." if len(result_text) > 100 else result_text
+            ctx.info(f"Tool execution successful, result preview: {preview}")
+            
+            return {
+                "status": "success",
+                "server": server_name,
+                "tool": tool_name,
+                "result": result_text
+            }
+            
+        except asyncio.TimeoutError:
+            ctx.info(f"Timeout executing tool {tool_name}")
+            return {
+                "status": "error",
+                "error": f"Timeout executing tool {tool_name}"
+            }
+            
+        except Exception as e:
+            ctx.info(f"Error executing tool {tool_name}: {e}")
+            return {
+                "status": "error",
+                "error": f"Tool execution failed: {str(e)}"
+            }
+    
     @mcp.tool()
     async def get_external_server_tools(server_name: str, ctx: Context) -> Dict[str, Any]:
         """
@@ -294,29 +370,47 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             Information about available tools
         """
         # Check if server is connected
-        if server_name not in _server_connections or not _server_connections[server_name]['session']:
+        if server_name not in _server_connections:
             return {
                 "status": "error",
                 "error": f"Server {server_name} is not connected. Use connect_to_server first."
             }
             
-        tools = _server_connections[server_name]['tools']
+        conn_data = _server_connections[server_name]
+        if 'session' not in conn_data or conn_data['session'] is None:
+            return {
+                "status": "error",
+                "error": f"Invalid session for server {server_name}. Try reconnecting."
+            }
         
-        # Extract tool information
-        tool_info = []
-        for tool in tools:
-            tool_info.append({
-                "name": tool["function"]["name"],
-                "description": tool["function"].get("description", ""),
-                "parameters": tool["function"].get("parameters", {})
-            })
+        session = conn_data['session']
+        
+        try:
+            # Get fresh tool list
+            tools_response = await session.list_tools()
+            tools = tools_response.tools
             
-        return {
-            "status": "success",
-            "server": server_name,
-            "tools": tool_info,
-            "toolCount": len(tools)
-        }
+            # Extract tool information
+            tool_info = []
+            for tool in tools:
+                tool_info.append({
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "parameters": tool.inputSchema
+                })
+                
+            return {
+                "status": "success",
+                "server": server_name,
+                "tools": tool_info,
+                "toolCount": len(tools)
+            }
+        except Exception as e:
+            ctx.info(f"Error getting tools from {server_name}: {e}")
+            return {
+                "status": "error",
+                "error": f"Failed to get tools: {str(e)}"
+            }
         
     @mcp.tool()
     async def disconnect_server(server_name: str, ctx: Context) -> Dict[str, Any]:
@@ -343,11 +437,7 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             
         try:
             # Clean up resources
-            if 'stack' in _server_connections[server_name]:
-                await _server_connections[server_name]['stack'].aclose()
-                
-            # Remove from connections
-            del _server_connections[server_name]
+            await _safe_cleanup_connection(server_name)
             
             ctx.info(f"Successfully disconnected from server {server_name}")
             return {
@@ -356,7 +446,7 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             }
             
         except Exception as e:
-            ctx.info(f"Error disconnecting from server {server_name}: {str(e)}")
+            ctx.info(f"Error disconnecting from server {server_name}: {e}")
             return {
                 "status": "error",
                 "error": f"Failed to disconnect: {str(e)}"
@@ -391,7 +481,7 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             server_info = {}
             for name, config in servers_config.items():
                 server_info[name] = {
-                    "connected": name in _server_connections and _server_connections[name]['session'] is not None,
+                    "connected": name in _server_connections and _server_connections[name].get('session') is not None,
                     "command": config.get("command", ""),
                     "args": config.get("args", [])
                 }
@@ -408,34 +498,29 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
                 "error": f"Failed to load server configuration: {str(e)}"
             }
 
-# Helper functions
-async def _convert_tools_to_openai_format(mcp_tools) -> List[Dict[str, Any]]:
-    """Convert MCP tools to OpenAI format for the LLM client"""
-    openai_tools = []
-    
-    for tool in mcp_tools:
-        openai_tool = {
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description or "",
-                "parameters": tool.inputSchema
-            }
-        }
-        openai_tools.append(openai_tool)
-        
-    return openai_tools
+# Helper function for safe cleanup
+async def _safe_cleanup_connection(server_name: str) -> None:
+    """Safely clean up a server connection"""
+    if server_name in _server_connections:
+        try:
+            if 'stack' in _server_connections[server_name]:
+                await _server_connections[server_name]['stack'].aclose()
+        except Exception as e:
+            logger.warning(f"Error closing stack for {server_name}: {e}")
+        finally:
+            _server_connections.pop(server_name, None)
 
 # Function to clean up all server connections
 async def cleanup_all_connections():
     """Clean up all server connections"""
-    cleanup_tasks = []
+    logger.info(f"Cleaning up {len(_server_connections)} server connections")
     
-    for server_name, connection in _server_connections.items():
-        if 'stack' in connection:
-            cleanup_tasks.append(connection['stack'].aclose())
-            
-    if cleanup_tasks:
-        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-        
-    _server_connections.clear()
+    # Make a copy of keys to avoid modification during iteration
+    server_names = list(_server_connections.keys())
+    
+    for server_name in server_names:
+        try:
+            await _safe_cleanup_connection(server_name)
+            logger.info(f"Cleaned up connection to {server_name}")
+        except Exception as e:
+            logger.error(f"Error cleaning up connection to {server_name}: {e}")

@@ -1,4 +1,4 @@
-# In main.py
+# main.py
 import asyncio
 import sys
 import os
@@ -18,30 +18,47 @@ load_dotenv()  # Load environment variables from .env
 
 async def main() -> None:
     """Main entry point for the application"""
-    if len(sys.argv) < 2:
-        print("Usage:")
-        print("  python main.py <server_script_path>            # Connect to local server script")
-        print("  python main.py --server <server_name>          # Connect to configured server")
-        sys.exit(1)
-        
     model = os.getenv("DEFAULT_LLM_MODEL", "google/gemini-2.0-flash-001")
     
     client = MCPClient(model=model)
     try:
-        if sys.argv[1] == "--server":
-            if len(sys.argv) < 3:
-                print("Error: Missing server name")
-                print("Usage: python main.py --server <server_name>")
-                sys.exit(1)
-            
-            server_name = sys.argv[2]
+        # Parse arguments to collect all servers (both script paths and configured servers)
+        server_scripts = []
+        configured_servers = []
+        
+        i = 1
+        while i < len(sys.argv):
+            if sys.argv[i] == "--server":
+                if i + 1 < len(sys.argv):
+                    configured_servers.append(sys.argv[i + 1])
+                    i += 2
+                else:
+                    print("Error: --server requires a server name")
+                    sys.exit(1)
+            else:
+                server_scripts.append(sys.argv[i])
+                i += 1
+        
+        if not server_scripts and not configured_servers:
+            print("Usage:")
+            print("  python main.py <server_script_path> [--server <server_name>]")
+            print("  Examples:")
+            print("    python main.py server/main.py                     # Connect to local server only")
+            print("    python main.py --server brave-search              # Connect to configured server only") 
+            print("    python main.py server/main.py --server brave-search # Connect to both")
+            sys.exit(1)
+        
+        # Connect to all script-based servers
+        for script in server_scripts:
+            logger.info(f"Connecting to server script: {script}")
+            await client.connect_to_server(script)
+        
+        # Connect to all configured servers
+        for server_name in configured_servers:
             logger.info(f"Connecting to configured server: {server_name}")
             await client.connect_to_configured_server(server_name)
-        else:
-            server_script = sys.argv[1]
-            logger.info(f"Using server script: {server_script}")
-            await client.connect_to_server(server_script)
         
+        # Start chat loop
         await client.chat_loop()
     finally:
         await client.cleanup()
