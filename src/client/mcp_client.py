@@ -1,6 +1,10 @@
 import logging
+import json
+import os
+import shutil
 from typing import Dict, List, Optional, Any
 from contextlib import AsyncExitStack
+from decouple import config
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -53,6 +57,79 @@ class MCPClient:
         response = await self.session.list_tools()
         tools = response.tools
         logger.info(f"Connected to server with tools: {[tool.name for tool in tools]}")
+
+    async def connect_to_configured_server(self, server_name: str, config_path: str = "server_config.json") -> None:
+        """Connect to an MCP server defined in configuration
+        
+        Args:
+            server_name: Name of the server in the config file
+            config_path: Path to the config file
+        """
+        logger.info(f"Connecting to configured server: {server_name}")
+        
+        # Load server configuration
+        try:
+            with open(config_path, 'r') as f:
+                server_config_json = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            raise ValueError(f"Failed to load server configuration: {e}")
+        
+        # Check for mcpServers structure (Claude Desktop format)
+        if "mcpServers" in server_config_json:
+            servers_config = server_config_json["mcpServers"]
+        else:
+            servers_config = server_config_json
+            
+        if server_name not in servers_config:
+            raise ValueError(f"Server '{server_name}' not found in configuration")
+            
+        server_config = servers_config[server_name]
+        
+        # Validate required fields
+        if 'command' not in server_config:
+            raise ValueError(f"Server '{server_name}' configuration missing 'command' field")
+            
+        # Find command in PATH
+        command = server_config['command']
+        command_path = shutil.which(command)
+        if not command_path:
+            raise ValueError(f"Command '{command}' not found in PATH")
+            
+        # Set up server parameters
+        args = server_config.get('args', [])
+        env = server_config.get('env', {}).copy() if server_config.get('env') else {}
+        
+        # For Brave Search, add the API key from .env
+        if server_name == "brave-search" and 'BRAVE_API_KEY' not in env:
+            try:
+                # Get API key from environment with decouple
+                api_key = config('BRAVE_API_KEY')
+                env['BRAVE_API_KEY'] = api_key
+                logger.info("Added Brave API key from environment")
+            except Exception as e:
+                raise ValueError(f"Error loading Brave API key: {str(e)}. Please set BRAVE_API_KEY in your .env file.")
+        
+        # Merge with current environment
+        env = {**os.environ, **env}
+        
+        # Create server parameters
+        server_params = StdioServerParameters(
+            command=command_path,
+            args=args,
+            env=env
+        )
+        
+        # Connect to server
+        stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
+        self.stdio, self.write = stdio_transport
+        self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
+        
+        await self.session.initialize()
+        
+        # List available tools
+        response = await self.session.list_tools()
+        tools = response.tools
+        logger.info(f"Connected to server {server_name} with tools: {[tool.name for tool in tools]}")
 
     async def process_query(self, query: str) -> str:
         """Process a query using LLM and available tools"""

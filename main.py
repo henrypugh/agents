@@ -1,3 +1,4 @@
+# In main.py
 import asyncio
 import sys
 import os
@@ -18,18 +19,29 @@ load_dotenv()  # Load environment variables from .env
 async def main() -> None:
     """Main entry point for the application"""
     if len(sys.argv) < 2:
-        print("Usage: python main.py <server_script_path>")
+        print("Usage:")
+        print("  python main.py <server_script_path>            # Connect to local server script")
+        print("  python main.py --server <server_name>          # Connect to configured server")
         sys.exit(1)
         
-    server_script = sys.argv[1]
     model = os.getenv("DEFAULT_LLM_MODEL", "google/gemini-flash-1.5-8b")
-    
-    logger.info(f"Starting MCP client with model: {model}")
-    logger.info(f"Using server script: {server_script}")
     
     client = MCPClient(model=model)
     try:
-        await client.connect_to_server(server_script)
+        if sys.argv[1] == "--server":
+            if len(sys.argv) < 3:
+                print("Error: Missing server name")
+                print("Usage: python main.py --server <server_name>")
+                sys.exit(1)
+            
+            server_name = sys.argv[2]
+            logger.info(f"Connecting to configured server: {server_name}")
+            await client.connect_to_configured_server(server_name)
+        else:
+            server_script = sys.argv[1]
+            logger.info(f"Using server script: {server_script}")
+            await client.connect_to_server(server_script)
+        
         await client.chat_loop()
     finally:
         await client.cleanup()
