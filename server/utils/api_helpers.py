@@ -32,3 +32,24 @@ def process_weather_data(data: Dict[str, Any]) -> Dict[str, Any]:
             "timestamp": current.get('time')
         }
     return data
+
+
+def process_fixture_data(data: Dict[str, Any]) -> Dict[str, Any]:
+
+    from utils.models import FixturesAPIResponse
+
+    fixtures = FixturesAPIResponse.model_validate(data)
+
+    result = ""
+
+    # Access the upcoming matches
+    for fixture in fixtures.response:
+        match_date = fixture.fixture.date
+        home_team = fixture.teams.home.name
+        away_team = fixture.teams.away.name
+        venue = fixture.fixture.venue.name
+        
+        result += f"{match_date.strftime('%d %b %Y, %H:%M')}: {home_team} vs {away_team} at {venue}\n"
+        # print(f"{match_date.strftime('%d %b %Y, %H:%M')}: {home_team} vs {away_team} at {venue}")
+    
+    return result
