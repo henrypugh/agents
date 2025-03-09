@@ -17,23 +17,30 @@ logger = setup_logging()
 load_dotenv()
 
 async def main() -> None:
-    """Connect to Brave Search server and start chat loop"""
-    model = os.getenv("DEFAULT_LLM_MODEL", "google/gemini-flash-1.5-8b")
+    """Start Brave Search client and begin chat session"""
+    model = os.getenv("DEFAULT_LLM_MODEL", "google/gemini-2.0-flash-001")
     logger.info(f"Starting MCP client with Brave Search using model: {model}")
     
     client = MCPClient(model=model)
     try:
-        await client.connect_to_configured_server("brave-search")
+        # Connect to the main server, which now includes the Brave Search tools
+        await client.connect_to_server("server/main.py")
         
-        # Display available tools information to the user
-        print("\nBrave Search MCP Server Connected!")
+        # Display available search tools information to the user
+        print("\nBrave Search MCP Tools Available!")
         print("Available search tools:")
-        print("  brave_web_search - Execute web searches with pagination and filtering")
-        print("  brave_local_search - Search for local businesses and services")
+        print("  brave_web_search - Execute web searches with pagination")
+        print("  brave_local_search - Search for local businesses in a specific location")
         
         await client.chat_loop()
     finally:
         await client.cleanup()
 
 if __name__ == "__main__":
+    # Make sure BRAVE_API_KEY is set
+    if not os.getenv("BRAVE_API_KEY"):
+        print("Error: BRAVE_API_KEY environment variable is required")
+        print("Please set it in your .env file or export it in your shell")
+        sys.exit(1)
+        
     asyncio.run(main())

@@ -10,7 +10,7 @@ logger = logging.getLogger("LLMClient")
 class LLMClient:
     """Handles communication with the OpenRouter API"""
     
-    def __init__(self, model: str = "google/gemini-flash-1.5-8b"):
+    def __init__(self, model: str = "google/gemini-2.0-flash-001"):
         self.client = OpenAI(
             api_key=config('OPENROUTER_API_KEY'),
             base_url="https://openrouter.ai/api/v1"
@@ -23,7 +23,7 @@ class LLMClient:
         try:
             logger.info("Making API call to LLM")
             logger.debug(f"Sending messages: {json.dumps(messages, indent=2)}")
-            logger.debug(f"Available tools: {json.dumps(tools, indent=2)}")
+            # logger.debug(f"Available tools: {json.dumps(tools, indent=2)}")
             
             response = self.client.chat.completions.create(
                 model=self.model,

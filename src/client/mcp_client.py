@@ -17,7 +17,7 @@ logger = logging.getLogger("MCPClient")
 class MCPClient:
     """Client for interacting with MCP servers"""
     
-    def __init__(self, model: str = "google/gemini-flash-1.5-8b"):
+    def __init__(self, model: str = "google/gemini-2.0-flash-001"):
         # Initialize session and client objects
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
@@ -169,7 +169,9 @@ class MCPClient:
             
             # Add text content to output if present
             if hasattr(message, 'content') and message.content:
-                final_text.append(message.content)
+                content = message.content.strip()
+                if content:  # Only add non-empty content
+                    final_text.append(content)
             
             # Check for and process tool calls
             has_tool_calls = hasattr(message, 'tool_calls') and message.tool_calls
@@ -177,13 +179,45 @@ class MCPClient:
             
             if has_tool_calls:
                 # Process each tool call
-                await self._handle_tool_calls(message.tool_calls, messages, available_tools, final_text)
+                for tool_call in message.tool_calls:
+                    await self._process_single_tool_call(tool_call, messages, available_tools, final_text)
         
         except Exception as e:
             logger.error(f"Error processing LLM response: {str(e)}", exc_info=True)
             final_text.append(f"Error occurred while processing: {str(e)}")
 
-        return "\n".join(final_text)
+        # Join all parts with newlines, ensuring there's no empty content
+        result = "\n".join(part for part in final_text if part and part.strip())
+        return result if result else "No response content received from the LLM."
+
+    async def _process_single_tool_call(
+        self,
+        tool_call: Any,
+        messages: List[Dict[str, Any]],
+        available_tools: List[Dict[str, Any]],
+        final_text: List[str]
+    ) -> None:
+        """Process a single tool call"""
+        logger.debug(f"Processing tool call: {tool_call}")
+        
+        # Execute the tool call
+        tool_result = await ToolManager.execute_tool_call(self.session, tool_call)
+        
+        # Add tool call info to output
+        tool_name = tool_call.function.name
+        tool_args_raw = tool_call.function.arguments
+        final_text.append(f"[Calling tool {tool_name} with args {tool_args_raw}]")
+        
+        # Add result to output
+        result_text = tool_result.get('result_text', '')
+        if result_text:
+            final_text.append(f"Tool result: {result_text}")
+        
+        # Update message history with tool call
+        self._update_message_history_sync(messages, tool_call, tool_result)
+        
+        # Get follow-up response from LLM
+        await self._get_follow_up_response(messages, available_tools, final_text)
         
     async def _handle_tool_calls(
         self, 
@@ -196,32 +230,17 @@ class MCPClient:
         logger.info(f"Processing {len(tool_calls)} tool calls")
         
         for tool_call in tool_calls:
-            logger.debug(f"Tool call details: {tool_call}")
+            await self._process_single_tool_call(tool_call, messages, available_tools, final_text)
             
-            # Execute the tool call
-            tool_result = await ToolManager.execute_tool_call(self.session, tool_call)
-            
-            # Add tool call info to output
-            tool_name = tool_call.function.name
-            tool_args_raw = tool_call.function.arguments
-            final_text.append(f"[Calling tool {tool_name} with args {tool_args_raw}]")
-            final_text.append(f"Tool result: {tool_result['result_text']}")
-            
-            # Update message history with tool call
-            await self._update_message_history(messages, tool_call, tool_result)
-            
-            # Get follow-up response from LLM
-            await self._get_follow_up_response(messages, available_tools, final_text)
-            
-    async def _update_message_history(
+    def _update_message_history_sync(
         self,
         messages: List[Dict[str, Any]],
         tool_call: Any,
         tool_result: Dict[str, Any]
     ) -> None:
-        """Update message history with tool call and result"""
+        """Update message history with tool call and result (synchronous version)"""
         # Add assistant message with tool call
-        messages.append({
+        tool_call_message = {
             "role": "assistant",
             "content": None,
             "tool_calls": [
@@ -234,14 +253,19 @@ class MCPClient:
                     }
                 }
             ]
-        })
+        }
+        messages.append(tool_call_message)
         
         # Add tool response message
-        messages.append({
+        tool_response_message = {
             "role": "tool", 
             "tool_call_id": tool_call.id,
             "content": tool_result["result_text"]
-        })
+        }
+        messages.append(tool_response_message)
+        
+        # Log updated message history for debugging
+        logger.debug(f"Updated message history with tool call and result. Now have {len(messages)} messages.")
     
     async def _get_follow_up_response(
         self,
@@ -252,17 +276,29 @@ class MCPClient:
         """Get and process follow-up response from LLM after tool call"""
         logger.info("Getting follow-up response with tool results")
         try:
-            # Log message count to avoid JSON serialization errors with complex objects
+            # Log message count for debugging
             logger.debug(f"Sending {len(messages)} messages for follow-up")
             
+            # Get follow-up response from LLM
             follow_up_response = await self.llm_client.get_completion(messages, available_tools)
             
-            # Add follow-up content to output if present
-            if (follow_up_response.choices and 
-                len(follow_up_response.choices) > 0 and 
-                follow_up_response.choices[0].message.content):
-                follow_up_content = follow_up_response.choices[0].message.content
-                final_text.append(follow_up_content)
+            # Process follow-up response
+            if follow_up_response.choices and len(follow_up_response.choices) > 0:
+                follow_up_message = follow_up_response.choices[0].message
+                
+                # Check for content
+                if hasattr(follow_up_message, 'content') and follow_up_message.content:
+                    content = follow_up_message.content.strip()
+                    if content:  # Ensure content is not empty
+                        logger.debug(f"Got follow-up content: {content[:100]}...")
+                        final_text.append(content)
+                
+                # Check for nested tool calls
+                if hasattr(follow_up_message, 'tool_calls') and follow_up_message.tool_calls:
+                    logger.info(f"Found {len(follow_up_message.tool_calls)} nested tool calls in follow-up")
+                    # We use individual tool processing to avoid recursion issues
+                    for tool_call in follow_up_message.tool_calls:
+                        await self._process_single_tool_call(tool_call, messages, available_tools, final_text)
         except Exception as e:
             logger.error(f"Error in follow-up API call: {str(e)}", exc_info=True)
             final_text.append(f"Error in follow-up response: {str(e)}")
@@ -280,7 +316,7 @@ class MCPClient:
             try:
                 query = input("\nQuery: ").strip()
                 
-                if query.lower() == 'quit':
+                if query.lower() in ['quit', 'exit']:
                     logger.info("Exiting chat loop")
                     break
                     

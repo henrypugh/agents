@@ -1,3 +1,5 @@
+restart_server.sh
+
 # Python environment
 .env
 .venv/

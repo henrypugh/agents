@@ -24,7 +24,7 @@ async def main() -> None:
         print("  python main.py --server <server_name>          # Connect to configured server")
         sys.exit(1)
         
-    model = os.getenv("DEFAULT_LLM_MODEL", "google/gemini-flash-1.5-8b")
+    model = os.getenv("DEFAULT_LLM_MODEL", "google/gemini-2.0-flash-001")
     
     client = MCPClient(model=model)
     try:

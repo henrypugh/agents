@@ -15,6 +15,7 @@ from contextlib import AsyncExitStack
 from mcp.server.fastmcp import FastMCP, Context
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from pydantic import Field
 
 logger = logging.getLogger("ServerConnector")
 
@@ -94,6 +95,9 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             }
             
         try:
+            # Import decouple at the top of your file
+            from decouple import config
+            
             # Create stack for resource management
             stack = AsyncExitStack()
             
@@ -103,15 +107,17 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             
             # For Brave Search, handle API key specially
             if server_name == "brave-search" and 'BRAVE_API_KEY' not in env:
-                # Try to get from environment
-                api_key = os.environ.get('BRAVE_API_KEY')
-                if not api_key:
+                # Try to get from environment using decouple
+                try:
+                    api_key = config('BRAVE_API_KEY', cast=str)
+                    env['BRAVE_API_KEY'] = api_key
+                    ctx.info("Added Brave API key from environment")
+                except Exception as e:
                     return {
                         "status": "error",
-                        "error": "BRAVE_API_KEY not found in environment"
+                        "error": f"BRAVE_API_KEY not found or invalid: {str(e)}"
                     }
-                env['BRAVE_API_KEY'] = api_key
-                
+            
             # Merge with current environment
             env = {**os.environ, **env}
             
@@ -175,7 +181,7 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
     async def execute_external_tool(
         server_name: str,
         tool_name: str,
-        tool_args: Dict[str, Any],
+        tool_args_json: str,
         ctx: Context
     ) -> Dict[str, Any]:
         """
@@ -189,9 +195,9 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             Name of the server containing the tool
         tool_name : str
             Name of the tool to execute
-        tool_args : Dict[str, Any]
-            Arguments to pass to the tool
-            
+        tool_args_json : str
+            JSON string representing arguments to pass to the tool
+                
         Returns:
         --------
         Dict
@@ -207,32 +213,69 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
         session = _server_connections[server_name]['session']
         
         try:
-            # Execute the tool
-            ctx.info(f"Executing tool {tool_name} on server {server_name}")
-            tool_result = await session.call_tool(tool_name, tool_args)
+            # Parse JSON string to dict
+            ctx.info(f"Parsing tool args JSON: {tool_args_json}")
+            try:
+                tool_args = json.loads(tool_args_json)
+            except json.JSONDecodeError as e:
+                ctx.info(f"Error parsing JSON: {str(e)}")
+                return {
+                    "status": "error",
+                    "error": f"Invalid JSON in tool_args_json: {str(e)}"
+                }
             
-            # Process the result
-            result_text = ""
-            if hasattr(tool_result, 'content') and tool_result.content:
-                # Extract text content
-                for content_item in tool_result.content:
-                    if hasattr(content_item, 'text'):
-                        result_text += content_item.text
+            # Execute the tool with proper error handling
+            ctx.info(f"Executing tool {tool_name} on server {server_name} with args: {tool_args}")
             
-            return {
-                "status": "success",
-                "server": server_name,
-                "tool": tool_name,
-                "result": result_text
-            }
-            
+            try:
+                # Execute the tool call
+                result = await session.call_tool(tool_name, tool_args)
+                
+                # Process the result
+                result_text = ""
+                if hasattr(result, 'content'):
+                    if isinstance(result.content, list):
+                        for content_item in result.content:
+                            if hasattr(content_item, 'text'):
+                                result_text += content_item.text
+                    elif isinstance(result.content, str):
+                        result_text = result.content
+                    else:
+                        result_text = str(result.content)
+                else:
+                    result_text = str(result)
+                
+                ctx.info(f"Tool execution successful, result: {result_text[:100]}...")
+                
+                return {
+                    "status": "success",
+                    "server": server_name,
+                    "tool": tool_name,
+                    "result": result_text
+                }
+            except Exception as e:
+                ctx.info(f"Error during tool execution: {str(e)}")
+                import traceback
+                tb = traceback.format_exc()
+                ctx.info(f"Traceback: {tb}")
+                
+                return {
+                    "status": "error",
+                    "error": f"Tool execution failed: {str(e)}",
+                    "traceback": tb
+                }
+                
         except Exception as e:
             ctx.info(f"Error executing tool {tool_name} on server {server_name}: {str(e)}")
+            import traceback
+            tb = traceback.format_exc()
+            
             return {
                 "status": "error", 
-                "error": f"Failed to execute tool: {str(e)}"
+                "error": f"Failed to execute tool: {str(e)}",
+                "traceback": tb
             }
-    
+        
     @mcp.tool()
     async def get_external_server_tools(server_name: str, ctx: Context) -> Dict[str, Any]:
         """
@@ -320,7 +363,10 @@ def register_server_connector_tools(mcp: FastMCP) -> None:
             }
 
     @mcp.tool()
-    async def get_available_servers(ctx: Context) -> Dict[str, Any]:
+    async def get_available_servers(
+        ctx: Context,
+        include_details: bool = True  # Add a parameter with default value AFTER ctx
+    ) -> Dict[str, Any]:
         """
         Get information about available servers from configuration
         

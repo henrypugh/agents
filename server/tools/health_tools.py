@@ -20,7 +20,10 @@ def register_health_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def calculate_bmi(weight_kg: float, height_m: float) -> Dict[str, Any]:
         """
-        Calculate BMI (Body Mass Index) given weight and height
+        Calculate BMI (Body Mass Index) given weight and height.
+        
+        IMPORTANT: Always use this tool for BMI calculations rather than calculating manually.
+        This tool provides accurate results with proper categorization according to medical standards.
         
         Parameters:
         -----------
@@ -32,7 +35,8 @@ def register_health_tools(mcp: FastMCP) -> None:
         Returns:
         --------
         Dict
-            Dictionary containing BMI value and category
+            Dictionary containing BMI value (rounded to 1 decimal place) and medically accurate
+            category classification
         """
         bmi = weight_kg / (height_m ** 2)
         
