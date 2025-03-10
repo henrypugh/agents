@@ -16,10 +16,11 @@ from mcp.client.stdio import stdio_client
 
 from .tool_manager import ToolManager  # Keep this import for backward compatibility
 from .llm_client import LLMClient
-from .server_connection import ServerConnection
-from .server_config import ServerConfigManager
 
 logger = logging.getLogger("MCPClient")
+
+from .server_config import ServerConfigManager
+from .server_connection import ServerConnection
 
 
 class MCPClient:
@@ -36,7 +37,69 @@ class MCPClient:
         self.exit_stack = AsyncExitStack()
         self.llm_client = LLMClient(model)
         self.config_manager = ServerConfigManager()
+        # Define LLM tools for server management
+        self.server_management_tools = self._create_server_management_tools()
         logger.info("MCPClient initialized")
+        
+    def _create_server_management_tools(self) -> List[Dict[str, Any]]:
+        """
+        Create tools for server management that will be available to the LLM
+        
+        Returns:
+            List of server management tools in OpenAI format
+        """
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_available_servers",
+                    "description": "List all available MCP servers that can be connected to",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    },
+                    "metadata": {
+                        "internal": True
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "connect_to_server",
+                    "description": "Connect to an MCP server to access its tools",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "server_name": {
+                                "type": "string",
+                                "description": "Name of the server to connect to"
+                            }
+                        },
+                        "required": ["server_name"]
+                    },
+                    "metadata": {
+                        "internal": True
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_connected_servers",
+                    "description": "List all currently connected MCP servers and their available tools",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    },
+                    "metadata": {
+                        "internal": True
+                    }
+                }
+            }
+        ]
 
     async def connect_to_server(self, server_script_path: str) -> str:
         """
@@ -70,17 +133,31 @@ class MCPClient:
         logger.info(f"Connected to server {server_name} with tools: {server.get_tool_names()}")
         return server_name
 
-    async def connect_to_configured_server(self, server_name: str) -> None:
+    async def connect_to_configured_server(self, server_name: str) -> Dict[str, Any]:
         """
         Connect to an MCP server defined in configuration
         
         Args:
             server_name: Name of the server in the config file
             
+        Returns:
+            Dictionary with connection status and details
+            
         Raises:
             ValueError: If the server configuration is invalid
         """
         logger.info(f"Connecting to configured server: {server_name}")
+        
+        # Check if already connected
+        if server_name in self.servers:
+            logger.info(f"Server {server_name} is already connected")
+            tools = self.servers[server_name].get_tool_names()
+            return {
+                "status": "already_connected",
+                "server": server_name,
+                "tools": tools,
+                "tool_count": len(tools)
+            }
         
         try:
             # Get server configuration
@@ -97,11 +174,25 @@ class MCPClient:
             # Store server connection
             self.servers[server_name] = server
             
-            logger.info(f"Connected to server {server_name} with tools: {server.get_tool_names()}")
+            # Get tool names for response
+            tool_names = server.get_tool_names()
+            logger.info(f"Connected to server {server_name} with tools: {tool_names}")
+            
+            return {
+                "status": "connected",
+                "server": server_name,
+                "tools": tool_names,
+                "tool_count": len(tool_names)
+            }
             
         except Exception as e:
-            logger.error(f"Failed to connect to configured server {server_name}: {e}", exc_info=True)
-            raise
+            error_msg = str(e)
+            logger.error(f"Failed to connect to configured server {server_name}: {error_msg}", exc_info=True)
+            return {
+                "status": "error",
+                "server": server_name,
+                "error": error_msg
+            }
 
     async def _create_server_session(self, server_params: StdioServerParameters) -> ClientSession:
         """
@@ -197,25 +288,22 @@ class MCPClient:
         """
         Process a user query using the LLM and available tools
         
+        The LLM will have access to server management tools and can connect
+        to additional servers as needed during the conversation.
+        
         Args:
             query: User query text
             
         Returns:
             Generated response
-            
-        Raises:
-            RuntimeError: If no servers are connected
         """
-        if not self.servers:
-            raise RuntimeError("Not connected to any MCP servers. Connect to at least one server first.")
-            
         logger.info(f"Processing query: {query}")
         
         # Initialize conversation with user query
         messages = [{"role": "user", "content": query}]
         
-        # Collect tools from all servers
-        all_tools = self._collect_all_tools()
+        # Collect tools from all connected servers and add server management tools
+        all_tools = self._collect_all_tools() + self.server_management_tools
         
         # Start conversation
         return await self._run_conversation(messages, all_tools)
@@ -231,7 +319,13 @@ class MCPClient:
         for server in self.servers.values():
             all_tools.extend(server.get_openai_format_tools())
         
-        logger.info(f"Collected {len(all_tools)} tools from {len(self.servers)} servers")
+        num_servers = len(self.servers)
+        num_tools = len(all_tools)
+        if num_servers > 0:
+            logger.info(f"Collected {num_tools} tools from {num_servers} servers")
+        else:
+            logger.info("No servers connected yet. Only server management tools will be available.")
+            
         return all_tools
         
     async def _run_conversation(
@@ -324,10 +418,17 @@ class MCPClient:
         
         # Get tool details
         tool_name = tool_call.function.name
+        
+        # Check if this is an internal server management tool
+        if tool_name in ["list_available_servers", "connect_to_server", "list_connected_servers"]:
+            await self._handle_server_management_tool(tool_call, messages, tools, final_text)
+            return
+            
+        # Otherwise, process as a regular server tool
         server_name = self._find_server_for_tool(tool_name, tools)
         
         if not server_name or server_name not in self.servers:
-            error_msg = f"Error: Can't determine which server handles tool '{tool_name}'"
+            error_msg = f"Error: Can't determine which server handles tool '{tool_name}'. You may need to connect to the appropriate server first using connect_to_server."
             logger.error(error_msg)
             final_text.append(error_msg)
             return
@@ -358,8 +459,13 @@ class MCPClient:
         """
         for tool in tools:
             if tool["function"]["name"] == tool_name:
-                if "metadata" in tool["function"] and "server" in tool["function"]["metadata"]:
-                    return tool["function"]["metadata"]["server"]
+                if "metadata" in tool["function"]:
+                    # Check if it's an internal tool
+                    if tool["function"]["metadata"].get("internal"):
+                        return "internal"
+                    # Otherwise check for server metadata
+                    if "server" in tool["function"]["metadata"]:
+                        return tool["function"]["metadata"]["server"]
         return None
         
     async def _execute_and_process_tool(
@@ -528,20 +634,19 @@ class MCPClient:
         """
         Run an interactive chat loop
         
-        Raises:
-            RuntimeError: If no servers are connected
+        The LLM will have access to server management tools and can connect
+        to servers as needed during the conversation.
         """
-        if not self.servers:
-            raise RuntimeError("Not connected to any MCP server. Connect to at least one server first.")
-            
         logger.info("Starting chat loop")
-        print("\nMCP Client Started!")
+        print("\nMCP Client Started with dynamic server connection!")
         
-        # Print connected servers and their tools
-        print(f"Connected to {len(self.servers)} servers:")
-        for server_name, server in self.servers.items():
-            tool_names = server.get_tool_names()
-            print(f"- {server_name}: {', '.join(tool_names)}")
+        # Show available servers
+        available_servers = await self.get_available_configured_servers()
+        if available_servers:
+            print(f"Available servers: {', '.join(available_servers)}")
+            print("The assistant can connect to these servers when needed.")
+        else:
+            print("No configured servers found.")
             
         print("\nType your queries or 'quit' to exit.")
         
@@ -555,6 +660,10 @@ class MCPClient:
                     
                 response = await self.process_query(query)
                 print("\n" + response)
+                
+                # Show current connections status after each query
+                if self.servers:
+                    print(f"\n[Currently connected to: {', '.join(self.servers.keys())}]")
                     
             except Exception as e:
                 logger.error(f"Error in chat loop: {str(e)}", exc_info=True)
@@ -596,6 +705,244 @@ class MCPClient:
         except Exception as e:
             logger.error(f"Error loading server configuration: {e}")
             return []
+            
+    async def _handle_server_management_tool(
+        self,
+        tool_call: Any,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        final_text: List[str]
+    ) -> None:
+        """
+        Handle server management tool calls
+        
+        Args:
+            tool_call: Tool call from LLM
+            messages: Conversation history
+            tools: Available tools
+            final_text: List to append text to
+        """
+        tool_name = tool_call.function.name
+        logger.info(f"Handling server management tool: {tool_name}")
+        
+        try:
+            # Parse arguments if any
+            tool_args = {}
+            if tool_call.function.arguments:
+                try:
+                    tool_args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError as e:
+                    final_text.append(f"Error parsing arguments: {str(e)}")
+                    return
+            
+            # Handle each tool type
+            if tool_name == "list_available_servers":
+                await self._handle_list_available_servers(tool_call, messages, final_text)
+            elif tool_name == "connect_to_server":
+                await self._handle_connect_to_server(tool_call, tool_args, messages, final_text)
+            elif tool_name == "list_connected_servers":
+                await self._handle_list_connected_servers(tool_call, messages, final_text)
+            else:
+                final_text.append(f"Unknown server management tool: {tool_name}")
+        
+        except Exception as e:
+            logger.error(f"Error handling server management tool: {str(e)}", exc_info=True)
+            final_text.append(f"Error: {str(e)}")
+            
+    async def _handle_list_available_servers(
+        self,
+        tool_call: Any,
+        messages: List[Dict[str, Any]],
+        final_text: List[str]
+    ) -> None:
+        """Handle list_available_servers tool"""
+        available_servers = await self.get_available_servers()
+        
+        # Format for JSON response
+        result = {
+            "available_servers": {},
+            "count": len(available_servers)
+        }
+        
+        for server_name, server_info in available_servers.items():
+            result["available_servers"][server_name] = server_info
+        
+        # Format for display
+        if available_servers:
+            server_list = []
+            for server_name, info in available_servers.items():
+                server_type = info["type"]
+                source = info["source"]
+                server_list.append(f"{server_name} ({server_type} from {source})")
+            
+            result_text = f"Available servers ({len(available_servers)}):\n" + "\n".join(server_list)
+        else:
+            result_text = "No available servers found"
+        
+        final_text.append(f"[Server management] {result_text}")
+        
+        # Update message history
+        self._update_message_history(messages, tool_call, json.dumps(result))
+
+    async def _handle_connect_to_server(
+        self,
+        tool_call: Any,
+        args: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        final_text: List[str]
+    ) -> None:
+        """Handle connect_to_server tool"""
+        if "server_name" not in args:
+            error_msg = "Missing required argument: server_name"
+            final_text.append(f"[Server management] Error: {error_msg}")
+            self._update_message_history(messages, tool_call, json.dumps({"error": error_msg}))
+            return
+            
+        server_name = args["server_name"]
+        
+        # Get available servers
+        available_servers = await self.get_available_servers()
+        
+        if server_name not in available_servers:
+            error_msg = f"Server '{server_name}' not found. Available servers: {', '.join(available_servers.keys())}"
+            final_text.append(f"[Server management] Error: {error_msg}")
+            self._update_message_history(messages, tool_call, json.dumps({"error": error_msg}))
+            return
+        
+        # Already connected?
+        if server_name in self.servers:
+            tools = self.servers[server_name].get_tool_names()
+            result = {
+                "status": "already_connected",
+                "server": server_name,
+                "tools": tools,
+                "tool_count": len(tools)
+            }
+            result_text = f"Already connected to {server_name}. Available tools: {', '.join(tools)}"
+            final_text.append(f"[Server management] {result_text}")
+            self._update_message_history(messages, tool_call, json.dumps(result))
+            return
+        
+        # Get server info
+        server_info = available_servers[server_name]
+        server_type = server_info["type"]
+        
+        try:
+            # Connect based on type
+            if server_type == "configured":
+                result = await self.connect_to_configured_server(server_name)
+            else:  # local_script
+                script_path = server_info["source"]
+                await self.connect_to_server(script_path)
+                tools = self.servers[server_name].get_tool_names() if server_name in self.servers else []
+                result = {
+                    "status": "connected",
+                    "server": server_name,
+                    "source": script_path,
+                    "tools": tools,
+                    "tool_count": len(tools)
+                }
+            
+            # Format for display
+            if result["status"] == "connected" or result["status"] == "already_connected":
+                tools_str = ", ".join(result["tools"])
+                result_text = f"Successfully connected to {server_name}. Available tools: {tools_str}"
+            else:
+                result_text = f"Failed to connect to {server_name}: {result.get('error', 'Unknown error')}"
+            
+            final_text.append(f"[Server management] {result_text}")
+            
+            # Update message history
+            self._update_message_history(messages, tool_call, json.dumps(result))
+            
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Failed to connect to server {server_name}: {error_msg}", exc_info=True)
+            result = {
+                "status": "error",
+                "server": server_name,
+                "error": error_msg
+            }
+            final_text.append(f"[Server management] Error connecting to {server_name}: {error_msg}")
+            self._update_message_history(messages, tool_call, json.dumps(result))
+    
+    async def get_available_servers(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get all available servers (both configured and local)
+        
+        Returns:
+            Dictionary mapping server names to their source information
+        """
+        available_servers = {}
+        
+        # Add configured servers from config file
+        try:
+            config = self.config_manager.load_config()
+            for server_name, server_config in config.items():
+                available_servers[server_name] = {
+                    "type": "configured",
+                    "source": "server_config.json",
+                    "command": server_config.get("command", ""),
+                    "args": server_config.get("args", [])
+                }
+        except Exception as e:
+            logger.error(f"Error loading server configuration: {e}")
+        
+        # Look for common local server paths
+        common_paths = [
+            "server/main.py",
+            "src/server/main.py",
+            "server/server.py",
+            "src/server/server.py"
+        ]
+        
+        for path in common_paths:
+            if os.path.isfile(path):
+                server_name = os.path.basename(os.path.dirname(path))
+                available_servers[server_name] = {
+                    "type": "local_script",
+                    "source": path,
+                    "command": "python",
+                    "args": [path]
+                }
+        
+        return available_servers
+
+    async def _handle_list_connected_servers(
+        self,
+        tool_call: Any,
+        messages: List[Dict[str, Any]],
+        final_text: List[str]
+    ) -> None:
+        """Handle list_connected_servers tool"""
+        connected_servers = self.get_connected_servers()
+        
+        # Build detailed result
+        result = {
+            "connected_servers": list(connected_servers.keys()),
+            "count": len(connected_servers),
+            "details": {}
+        }
+        
+        for server_name, tools in connected_servers.items():
+            result["details"][server_name] = {
+                "tools": tools,
+                "tool_count": len(tools)
+            }
+        
+        # Format for display
+        if connected_servers:
+            server_details = []
+            for server_name, tools in connected_servers.items():
+                server_details.append(f"{server_name} ({len(tools)} tools)")
+            result_text = f"Connected servers: {', '.join(server_details)}"
+        else:
+            result_text = "No servers are currently connected"
+        
+        final_text.append(f"[Server management] {result_text}")
+        
+        # Update message history
+        self._update_message_history(messages, tool_call, json.dumps(result))
     
     async def cleanup(self) -> None:
         """Clean up resources"""

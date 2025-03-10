@@ -69,4 +69,3 @@ class ServerConnection:
             formatted_tools.append(tool_dict)
             
         return formatted_tools
-

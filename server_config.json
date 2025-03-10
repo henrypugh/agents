@@ -5,5 +5,10 @@
     "env": {
       "BRAVE_API_KEY": "${BRAVE_API_KEY}"
     }
+  },
+  "main-server": {
+    "command": "python",
+    "args": ["server/main.py"],
+    "env": {}
   }
 }

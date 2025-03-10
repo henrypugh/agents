@@ -2,6 +2,7 @@
 import asyncio
 import sys
 import os
+import argparse
 
 # Add the project root directory to Python path to enable imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -14,51 +15,46 @@ from src.client.mcp_client import MCPClient
 logger = setup_logging()
 
 # Load environment variables
-load_dotenv()  # Load environment variables from .env
+load_dotenv()
 
 async def main() -> None:
     """Main entry point for the application"""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="MCP Client with dynamic server connection")
+    parser.add_argument("server_scripts", nargs="*", help="Optional server script paths to connect to at startup")
+    parser.add_argument("--server", action="append", dest="configured_servers", 
+                        help="Named servers from config to connect to at startup (can be used multiple times)")
+    args = parser.parse_args()
+    
+    # Get LLM model from environment or use default
     model = os.getenv("DEFAULT_LLM_MODEL", "google/gemini-2.0-flash-001")
     
+    # Initialize client
     client = MCPClient(model=model)
+    
     try:
-        # Parse arguments to collect all servers (both script paths and configured servers)
-        server_scripts = []
-        configured_servers = []
+        # Pre-connect to requested servers if any
+        pre_connected = []
         
-        i = 1
-        while i < len(sys.argv):
-            if sys.argv[i] == "--server":
-                if i + 1 < len(sys.argv):
-                    configured_servers.append(sys.argv[i + 1])
-                    i += 2
-                else:
-                    print("Error: --server requires a server name")
-                    sys.exit(1)
-            else:
-                server_scripts.append(sys.argv[i])
-                i += 1
+        # Connect to script-based servers
+        for script in args.server_scripts:
+            logger.info(f"Pre-connecting to server script: {script}")
+            server_name = await client.connect_to_server(script)
+            pre_connected.append(server_name)
         
-        if not server_scripts and not configured_servers:
-            print("Usage:")
-            print("  python main.py <server_script_path> [--server <server_name>]")
-            print("  Examples:")
-            print("    python main.py server/main.py                     # Connect to local server only")
-            print("    python main.py --server brave-search              # Connect to configured server only") 
-            print("    python main.py server/main.py --server brave-search # Connect to both")
-            sys.exit(1)
+        # Connect to configured servers
+        if args.configured_servers:
+            for server_name in args.configured_servers:
+                logger.info(f"Pre-connecting to configured server: {server_name}")
+                result = await client.connect_to_configured_server(server_name)
+                if result["status"] in ["connected", "already_connected"]:
+                    pre_connected.append(server_name)
         
-        # Connect to all script-based servers
-        for script in server_scripts:
-            logger.info(f"Connecting to server script: {script}")
-            await client.connect_to_server(script)
+        # Show pre-connection status if any servers were connected
+        if pre_connected:
+            print(f"Pre-connected to servers: {', '.join(pre_connected)}")
         
-        # Connect to all configured servers
-        for server_name in configured_servers:
-            logger.info(f"Connecting to configured server: {server_name}")
-            await client.connect_to_configured_server(server_name)
-        
-        # Start chat loop
+        # Start chat loop - the LLM can still connect to additional servers as needed
         await client.chat_loop()
     finally:
         await client.cleanup()
