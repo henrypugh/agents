@@ -118,24 +118,19 @@ class MCPClient:
                 env_value = os.getenv(env_var_name)
                 if env_value:
                     processed_env[key] = env_value
-                    logger.info(f"Resolved env var {env_var_name} for {key}")
+                    if key == 'BRAVE_API_KEY':
+                        logger.info(f"[API KEY SOURCE] Using {key} from environment variable: ${{{env_var_name}}}")
+                    else:
+                        logger.info(f"Resolved env var {env_var_name} for {key}")
                 else:
                     logger.warning(f"Environment variable {env_var_name} not found")
             else:
                 processed_env[key] = value
         
-        # For Brave Search, add the API key from .env if needed
-        if server_name == "brave-search" and 'BRAVE_API_KEY' not in processed_env:
-            try:
-                # Get API key from environment with decouple
-                api_key = config('BRAVE_API_KEY', default=None)
-                if api_key:
-                    processed_env['BRAVE_API_KEY'] = api_key
-                    logger.info("Added Brave API key from environment")
-                else:
-                    raise ValueError("BRAVE_API_KEY not found in environment")
-            except Exception as e:
-                raise ValueError(f"Error loading Brave API key: {str(e)}. Please set BRAVE_API_KEY in your .env file.")
+        # Log API key status if this is the Brave Search server
+        if server_name == "brave-search" and 'BRAVE_API_KEY' in processed_env:
+            key_preview = processed_env['BRAVE_API_KEY'][:4] + "..." if processed_env['BRAVE_API_KEY'] else "None"
+            logger.info(f"[API KEY STATUS] Brave API key is set (starts with: {key_preview})")
         
         # Merge with current environment
         env = {**os.environ, **processed_env}
