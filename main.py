@@ -37,7 +37,7 @@ async def main() -> None:
         pre_connected = []
         
         # Connect to script-based servers
-        for script in args.server_scripts:
+        for script in args.server_scripts or []:
             logger.info(f"Pre-connecting to server script: {script}")
             server_name = await client.connect_to_server(script)
             pre_connected.append(server_name)

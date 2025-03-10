@@ -1,289 +1,416 @@
-# MCP Client - Advanced Multi-Server Architecture
+# MCP Client - Developer Reference
 
-An advanced, modular client for interacting with Model Context Protocol (MCP) servers using OpenRouter's LLM API services. This project demonstrates a sophisticated approach to AI tool integration using direct client-to-multiple-servers communication.
-
-## Key Features
-
-- **Dynamic Server Connection**: LLM decides when to connect to servers based on user queries
-- **Multiple Server Integration**: Connect to both local and remote MCP servers simultaneously
-- **Direct Server Access**: Client connects directly to each specialized server
-- **Unified Tool Interface**: Present tools from all servers to the LLM with clear server attribution
-- **API Independence**: No direct API dependencies in core code - all external APIs are handled through MCP servers
-- **Modular Architecture**: Clean separation between client, LLM integration, and tool management
+This document serves as a personal reference for ongoing development of the MCP Client project. It documents the architecture, code structure, implementation details, and development notes to help quickly re-orient when returning to the codebase.
 
 ## Architecture Overview
 
-This project implements an advanced MCP architecture pattern that allows one client to connect to multiple specialized MCP servers as needed:
+The project follows a modular architecture organized around these core components:
 
 ```
-                          ┌───────────────────────┐
-                     ┌───►│  Local MCP Server     │
-                     │    │  (Math, Health tools) │
-                     │    └───────────────────────┘
-┌─────────────┐      │    
-│             │      │    ┌───────────────────────┐       ┌─────────────┐
-│  LLM Client ├──────┼───►│  Brave Search Server  │──────►│  Brave API  │
-│ (OpenRouter)│      │    │                       │       │             │
-│             │      │    └───────────────────────┘       └─────────────┘
-└─────────────┘      │    
-                     │    ┌───────────────────────┐
-                     └───►│  Other MCP Servers    │
-                          │  (As needed)          │
-                          └───────────────────────┘
+┌─────────────────────────────────────────┐
+│             MCP Client (main)           │
+└─┬─────────────────┬──────────────────┬──┘
+  │                 │                  │
+  ▼                 ▼                  ▼
+┌─────────┐   ┌───────────────┐   ┌──────────────┐
+│LLM Client│   │Server Manager │   │Conversation  │
+└─────────┘   └───────┬───────┘   │Manager       │
+                      │           └───────┬──────┘
+                      ▼                   │
+              ┌────────────────┐         │
+              │Server Connection│◄────────┘
+              └────────┬───────┘
+                       │
+                       ▼
+              ┌────────────────┐         ┌────────────────┐
+              │  MCP Servers   │────────►│External APIs   │
+              └────────────────┘         └────────────────┘
 ```
 
-### Components
+### Components and Interactions
 
-1. **Client Components**
-   - `main.py`: Entry point for the application
-   - `src/client/mcp_client.py`: Main client for interacting with MCP servers
-   - `src/client/llm_client.py`: Client for communicating with the OpenRouter API
-   - `src/client/tool_manager.py`: Manages tool operations and formatting
-   - `src/utils/logger_setup.py`: Configures logging for the application
+1. **Main Module (`main.py`)**
+   - Entry point that parses CLI args and initializes core components
+   - Manages pre-connection to servers and the main chat loop
 
-2. **Server Components**
-   - `server/main.py`: Entry point for the local MCP server
-   - `server/tools/`: Directory containing tool implementations
-   - `server/resources/`: Directory containing resource implementations
-   - `server/prompts/`: Directory for prompt templates
-   - `server/utils/`: Utility functions shared across modules
+2. **MCP Client (`src/client/mcp_client.py`)**
+   - Core orchestrator that delegates to specialized components
+   - Maintains the chat loop and handles user interactions
+   - Exposes public API for connecting to servers and processing queries
 
-3. **External MCP Servers**
-   - `@modelcontextprotocol/server-brave-search`: Official Brave Search MCP server
-   - Additional servers as needed (defined in `server_config.json`)
+3. **Conversation Manager (`src/client/conversation_manager.py`)**
+   - Manages LLM interaction and conversation flow
+   - Processes queries through the LLM
+   - Handles tool calls and results processing
+   - Contains server management tools logic
 
-## Setup
+4. **Server Manager (`src/client/server_manager.py`)**
+   - Manages creation and lifecycle of server connections
+   - Stores server connection instances
+   - Handles discovery of available servers
+   - Collects tools from all connected servers
 
-1. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+5. **Tool Processor (`src/client/tool_processor.py`)**
+   - Processes tool calls from the LLM
+   - Routes tools to appropriate servers
+   - Handles tool execution and error handling
 
-2. **Create a `.env` file** with your API keys:
-   ```
-   OPENROUTER_API_KEY=your-openrouter-api-key
-   BRAVE_API_KEY=your-brave-api-key
-   DEFAULT_LLM_MODEL=google/gemini-2.0-flash-001
-   ```
+6. **Server Connection (`src/client/server_connection.py`)**
+   - Encapsulates connection to individual MCP servers
+   - Handles initialization and tool discovery
+   - Executes tool calls on specific servers
 
-3. **Ensure NPX is installed** (for external MCP servers):
-   ```bash
-   # Check if npx is installed
-   npx --version
-   
-   # If not, install Node.js which includes npx
-   # On Ubuntu/Debian:
-   sudo apt update && sudo apt install nodejs npm
-   ```
+7. **LLM Client (`src/client/llm_client.py`)**
+   - Handles communication with the OpenRouter API
+   - Formats messages and tools for the LLM
+   - Processes LLM responses
 
-## Usage
+## Refactoring History & Design Decisions
 
-### Dynamic Server Connection (New Default)
+### Initial Implementation
+- Started with monolithic architecture in a single `mcp_client.py` file
+- Implemented basic functionality for connecting to MCP servers
+- Added LLM integration with OpenRouter
 
-The simplest way to use the client is with dynamic server connection. The LLM will automatically connect to servers as needed based on your queries:
+### First Refactoring (Current)
+- Split monolithic design into specialized components
+- Introduced `ServerManager` to handle server connection lifecycle
+- Created `ConversationManager` to handle LLM interaction
+- Added `ToolProcessor` to handle tool routing and execution
+- Separated `ServerConnection` to encapsulate individual server connections
+- Updated `MCPClient` to orchestrate these components
 
+### Key Design Decisions
+
+1. **Component Separation**
+   - Each component has single responsibility
+   - Components communicate through well-defined interfaces
+   - Makes testing and future changes easier
+
+2. **Dependency Injection**
+   - Components receive dependencies through constructor
+   - Allows for easier testing and flexibility
+   - Avoids tight coupling between components
+
+3. **Async Design**
+   - Using asyncio throughout codebase
+   - Allows for efficient handling of multiple server connections
+   - Enables non-blocking I/O for LLM and server communication
+
+4. **Error Handling Strategy**
+   - Exception handling at appropriate levels
+   - Lower-level components propagate errors
+   - Higher-level components handle display and recovery
+
+5. **Configuration Management**
+   - Server configurations stored in external JSON
+   - Environment variables for sensitive information
+   - Server configs dynamically processed at runtime
+
+## Component Breakdown
+
+### MCP Client
+- **Purpose**: Main entry point and coordinator
+- **Responsibilities**:
+  - Initialize components
+  - Manage server connections
+  - Process user queries
+  - Handle chat loop
+- **Key Methods**:
+  - `connect_to_server()`: Connect to server by script path
+  - `connect_to_configured_server()`: Connect to named server
+  - `process_query()`: Process user query with LLM and tools
+  - `chat_loop()`: Run interactive chat loop
+  - `cleanup()`: Clean up resources
+
+### Server Manager
+- **Purpose**: Manage server connections
+- **Responsibilities**:
+  - Create and store server connections
+  - Initialize server sessions
+  - Discover available servers
+  - Collect tools from servers
+- **Key Methods**:
+  - `connect_to_server()`: Connect to server by script path
+  - `connect_to_configured_server()`: Connect to configured server
+  - `get_server()`: Get server connection by name
+  - `collect_all_tools()`: Collect tools from all servers
+  - `get_connected_servers()`: Get info about connected servers
+  - `get_available_servers()`: Get all available servers
+  - `cleanup()`: Clean up server connections
+
+### Conversation Manager
+- **Purpose**: Manage LLM conversations
+- **Responsibilities**:
+  - Process queries through LLM
+  - Handle tool calls
+  - Update conversation history
+  - Process server management tools
+- **Key Methods**:
+  - `process_query()`: Process user query
+  - `_run_conversation()`: Run conversation with LLM
+  - `_process_response()`: Process LLM response
+  - `_process_tool_call()`: Process tool call from LLM
+  - `_handle_server_management_tool()`: Handle server management tools
+  - `_get_follow_up_response()`: Get follow-up response after tool execution
+
+### Tool Processor
+- **Purpose**: Process tool calls
+- **Responsibilities**:
+  - Find server for tool
+  - Execute tool on appropriate server
+  - Extract results from tool execution
+- **Key Methods**:
+  - `find_server_for_tool()`: Find server for tool
+  - `execute_tool()`: Execute tool on server
+  - `extract_result_text()`: Extract text from tool result
+
+### Server Connection
+- **Purpose**: Encapsulate connection to MCP server
+- **Responsibilities**:
+  - Maintain connection to server
+  - Discover tools from server
+  - Execute tools on server
+  - Format tools for LLM
+- **Key Methods**:
+  - `initialize()`: Initialize connection to server
+  - `refresh_tools()`: Refresh list of tools
+  - `execute_tool()`: Execute tool on server
+  - `get_tool_names()`: Get list of tool names
+  - `get_openai_format_tools()`: Get tools in OpenAI format
+
+### LLM Client
+- **Purpose**: Communicate with LLM API
+- **Responsibilities**:
+  - Format messages and tools for LLM
+  - Send requests to OpenRouter API
+  - Process LLM responses
+- **Key Methods**:
+  - `get_completion()`: Get completion from LLM
+
+## Developer Cheatsheet
+
+### Common Commands
+
+**Running the application:**
 ```bash
-# Start with dynamic server connection
+# Dynamic server connection (default)
 python main.py
-```
 
-With this approach, the LLM will:
-1. Show you what servers are available
-2. Connect to appropriate servers when your queries require specific tools
-3. Provide feedback when it connects to servers
-
-### Pre-connecting to Servers (Optional)
-
-You can also pre-connect to specific servers at startup if desired:
-
-```bash
-# Pre-connect to local server script
+# Pre-connect to server script
 python main.py server/main.py
 
-# Pre-connect to configured server from server_config.json
+# Pre-connect to configured server
 python main.py --server brave-search
 
 # Pre-connect to multiple servers
 python main.py server/main.py --server brave-search
 ```
 
-Even when pre-connected to some servers, the LLM can still connect to additional servers dynamically as needed.
+**Development commands:**
+```bash
+# Install dependencies
+pip install -r requirements.txt
 
-### Server Configuration
+# Set up environment (requires .env file)
+# OPENROUTER_API_KEY=your-openrouter-api-key
+# BRAVE_API_KEY=your-brave-api-key
+# DEFAULT_LLM_MODEL=google/gemini-2.0-flash-001
 
-External MCP servers are defined in `server_config.json`:
+# Run with verbose logging
+DEBUG=1 python main.py
 
-```json
-{
-  "brave-search": {
-    "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-    "env": {
-      "BRAVE_API_KEY": "${BRAVE_API_KEY}"
-    }
-  },
-  "another-server": {
-    "command": "path/to/server",
-    "args": ["--option", "value"],
-    "env": {
-      "SOME_API_KEY": "your-api-key-here"
-    }
-  }
-}
+# Connect to specific server and inspect tools
+python main.py --server brave-search --inspect-tools
 ```
 
-## Dynamic Server Connection Workflow
+### Common Debugging Patterns
 
-Here's how the dynamic server connection works:
-
-1. **User Query**: You ask a question
-2. **LLM Analysis**: The LLM analyzes what's needed to answer your question
-3. **Server Discovery**: If specialized tools are needed, the LLM checks available servers
-4. **Dynamic Connection**: The LLM connects to the appropriate server(s)
-5. **Tool Usage**: The LLM uses the newly available tools to answer your question
-
-This process is completely transparent to you - you just ask your questions naturally, and the system handles finding and connecting to the right tools.
-
-## Client-to-Multiple-Servers Communication
-
-The client maintains separate connections to each server and routes tool calls appropriately:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant LLM as LLM (OpenRouter)
-    participant Client as MCP Client
-    participant LocalServer as Local MCP Server
-    participant BraveServer as Brave Search Server
-    participant BraveAPI as Brave Search API
-
-    User->>Client: User Query
-    Client->>LLM: Forward Query with All Tools
-    
-    LLM->>Client: Request to list available servers
-    Client->>LLM: Return available servers
-    
-    LLM->>Client: Request to connect to brave-search
-    Client->>BraveServer: Connect
-    Client->>LLM: Connection successful
-    
-    LLM->>Client: Request to use brave_web_search
-    Client->>BraveServer: call_tool("brave_web_search", {...})
-    BraveServer->>BraveAPI: HTTP API Request
-    BraveAPI->>BraveServer: HTTP Response
-    BraveServer->>Client: Tool execution result
-    
-    Client->>LLM: Send tool result
-    LLM->>Client: Final response
-    Client->>User: Display formatted response
-```
-
-## Tool Categories
-
-The various servers provide the following tools:
-
-1. **Local Server Tools**:
-   - **Math Operations**:
-     - `add`: Adds two numbers
-     - `multiply`: Multiplies two numbers
-   - **Health Calculations**:
-     - `calculate_bmi`: Calculates BMI from weight (kg) and height (m)
-   - **External Data**:
-     - `fetch_weather`: Fetches weather information for a location based on coordinates
-     - `fetch_next_three_fixtures`: Fetches upcoming football fixtures
-
-2. **Brave Search Server Tools**:
-   - `brave_web_search`: Performs web searches
-   - `brave_local_search`: Searches for local businesses
-
-## Example Interaction
-
-Here's an example of dynamic server connection during a conversation:
-
-```
-Query: What's the weather like in London?
-
-[Server management] Available servers (2): brave-search, main-server
-
-[Server management] Successfully connected to main-server. Available tools: add, multiply, calculate_bmi, fetch_weather, fetch_next_three_fixtures
-
-[Calling tool fetch_weather from main-server server with args {"latitude": 51.5074, "longitude": -0.1278}]
-Tool result: Temperature: 12.3°C, Wind speed: 15.2 km/h, Weather code: Partly cloudy
-
-Based on the current weather data for London, it's partly cloudy with a temperature of 12.3°C (54.1°F). The wind speed is moderate at 15.2 km/h (9.4 mph). It's a typical spring day in London - cool but not cold, with some cloud cover. You might want to bring a light jacket if you're heading out.
-
-[Currently connected to: main-server]
-```
-
-## Adding New Tools
-
-You can extend the server with additional tools by:
-
-1. Adding new tool modules in the `server/tools/` directory
-2. Creating new resource modules in the `server/resources/` directory
-3. Implementing registration functions for your new components
-4. Updating the appropriate `__init__.py` file to import and register your components
-
-Example tool module:
-
+**Server connection issues:**
 ```python
-"""Example tool module for the MCP server."""
-from mcp.server.fastmcp import FastMCP
-
-def register_example_tools(mcp: FastMCP) -> None:
-    """Register all example tools with the MCP server."""
-    
-    @mcp.tool()
-    def example_tool(param1: str, param2: int) -> str:
-        """
-        Example tool description
-        
-        Parameters:
-        -----------
-        param1 : str
-            Description of param1
-        param2 : int
-            Description of param2
-            
-        Returns:
-        --------
-        str
-            Description of return value
-        """
-        return f"Result: {param1} - {param2}"
+# Check if server is connected
+server = server_manager.get_server("server-name")
+if server:
+    # Server is connected
+    tools = server.get_tool_names()
+    print(f"Connected to {server_name} with tools: {tools}")
+else:
+    # Server is not connected
+    print(f"Not connected to {server_name}")
 ```
 
-## Adding New Servers
+**Tool execution issues:**
+```python
+# Execute tool with try/except
+try:
+    result = await server_connection.execute_tool(tool_name, tool_args)
+    print(f"Tool execution successful: {result}")
+except Exception as e:
+    print(f"Tool execution failed: {e}")
+```
 
-To add a new server to the configuration:
+## Technical Debt & Areas for Improvement
 
-1. Create a new entry in `server_config.json`:
-   ```json
-   "my-new-server": {
-     "command": "your-command",
-     "args": ["--arg1", "value1"],
-     "env": {
-       "API_KEY": "your-api-key"
-     }
-   }
-   ```
+1. **Error Handling**
+   - Need more specific exception types
+   - Better recovery mechanisms for server connection failures
+   - More graceful handling of LLM API errors
 
-2. The LLM will automatically detect and connect to it when needed, or you can pre-connect:
-   ```bash
-   python main.py --server my-new-server
-   ```
+2. **Testing**
+   - No unit tests currently implemented
+   - Need mocking framework for external dependencies
+   - Should add integration tests for complete flows
 
-## Debugging
+3. **Configuration Management**
+   - Server configuration scattered across files
+   - Environment variable handling needs improvement
+   - No validation for configuration values
 
-Detailed logging is provided for debugging and development. The logs include:
+4. **Logging Improvements**
+   - More structured logging needed
+   - Different log levels for components
+   - Better formatting for debug information
 
-- Tool execution details
-- Server connection information
-- LLM API requests and responses
-- Error details with stack traces
+5. **Security Considerations**
+   - API key handling could be improved
+   - No input validation for user queries
+   - No rate limiting for LLM API calls
 
-To view more detailed logs, set the logging level to DEBUG in `src/utils/logger_setup.py`.
+6. **Dependency Management**
+   - No formal dependency injection
+   - Components tightly coupled in some areas
+   - No container for managing component lifecycle
 
-## Contributors
+## Dynamic Server Connection Implementation
 
-- [Henry Pugh](https://github.com/henrypugh)
+The dynamic server connection is a core feature that allows the LLM to discover and connect to servers as needed:
+
+### Implementation Details
+
+1. **Server Management Tools**
+   - The `ConversationManager` adds special server management tools to the LLM
+   - These tools allow the LLM to list, connect to, and use servers
+
+2. **Server Discovery**
+   - The `ServerManager.get_available_servers()` method discovers available servers:
+     - Reads server configurations from `server_config.json`
+     - Looks for common server script paths in the project
+
+3. **Server Connection Flow**
+   1. LLM requests list of available servers via `list_available_servers` tool
+   2. Client returns available server information
+   3. LLM decides which server to connect to based on tools needed
+   4. LLM requests connection via `connect_to_server` tool
+   5. Client connects to server and initializes session
+   6. LLM receives updated tool list including new server tools
+   7. LLM can now use tools from the connected server
+
+4. **Connection Lifecycle Management**
+   - Connections are maintained throughout the session
+   - The `AsyncExitStack` in `ServerManager` ensures proper cleanup
+   - Connections can be manually disconnected or automatically closed on exit
+
+### Critical Implementation Notes
+
+- **Server Initialization**: Server initialization must complete within timeout (30s default)
+- **Session Management**: Each server has its own MCP session that must be maintained
+- **Tool Attribution**: Each tool is tagged with its server name for proper routing
+- **Server Connection Reuse**: Existing connections are reused when possible
+- **Connection Cleanup**: All connections must be properly closed on application exit
+
+## Data Flow
+
+### Query Processing Flow
+
+```
+User Query -> MCP Client -> Conversation Manager -> LLM Client -> OpenRouter API
+                                     ↓
+                                LLM Response
+                                     ↓
+                             Tool Call Needed?
+                             /           \
+                          No             Yes
+                           ↓               ↓
+                    Final Response   Tool Processor
+                                          ↓
+                                   Server Manager
+                                          ↓
+                                  Server Connection
+                                          ↓
+                                     MCP Server
+                                          ↓
+                                   Tool Execution
+                                          ↓
+                                    Tool Result
+                                          ↓
+                                Follow-up Response
+                                          ↓
+                                   Final Response
+```
+
+### Tool Execution Flow
+
+1. LLM generates tool call with name and arguments
+2. `ConversationManager._process_tool_call()` processes the tool call
+3. `ToolProcessor.find_server_for_tool()` identifies the server for the tool
+4. `ToolProcessor.execute_tool()` executes the tool on the appropriate server
+5. `ServerConnection.execute_tool()` sends the tool call to the MCP server
+6. Server executes the tool and returns the result
+7. `ToolProcessor.extract_result_text()` extracts text from the result
+8. `ConversationManager._update_message_history()` updates conversation history
+9. `ConversationManager._get_follow_up_response()` gets follow-up response from LLM
+10. Final response is returned to the user
+
+### Server Connection Flow
+
+1. `ServerManager.connect_to_configured_server()` or `connect_to_server()` is called
+2. Server parameters are created using config or script path
+3. `ServerManager._create_server_session()` creates MCP session
+4. `ServerConnection.initialize()` initializes the server connection
+5. `ServerConnection.refresh_tools()` discovers available tools
+6. Connection is stored in `ServerManager.servers` dictionary
+7. Tools are available for use through `ServerManager.collect_all_tools()`
+
+## Implementation Details to Remember
+
+1. **Error Handling in Async Context**
+   - Always use `try/except` inside async functions
+   - Be careful with async context managers
+   - Ensure `AsyncExitStack` is properly closed
+
+2. **LLM Tool Format**
+   - Tools must be formatted in OpenAI function calling format
+   - Each tool needs a unique name
+   - Tool arguments must be properly specified with JSON Schema
+   - Server attribution is added in tool metadata
+
+3. **JSON-RPC Handling**
+   - MCP uses JSON-RPC for communication
+   - Error responses need proper error codes
+   - Responses must match request IDs
+
+4. **Environment Variable Processing**
+   - Environment variables in server config use `${VAR_NAME}` syntax
+   - Variables are resolved at runtime using `os.getenv()`
+   - Missing variables are logged as warnings
+
+5. **Tool Execution Timeouts**
+   - Tool execution has a 30-second timeout by default
+   - Long-running tools should implement progress reporting
+   - Timeouts can cause resource leaks if not properly handled
+
+6. **Session Initialization**
+   - Server sessions must be properly initialized
+   - Server capabilities are negotiated during initialization
+   - Session initialization failures must be properly handled
+
+7. **Message History Management**
+   - LLM conversation history must be properly maintained
+   - Tool calls and results must be correctly formatted
+   - Message history can grow large and needs monitoring
+
+8. **Resource Cleanup**
+   - All server connections must be properly closed
+   - AsyncExitStack ensures proper cleanup of async resources
+   - Manual resource cleanup may be needed in some error cases
+

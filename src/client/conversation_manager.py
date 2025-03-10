@@ -4,7 +4,7 @@ Conversation Manager module for handling LLM conversations.
 
 import logging
 import json
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 
 from .llm_client import LLMClient
 from .server_manager import ServerManager
@@ -469,7 +469,7 @@ class ConversationManager:
         
         # Connect to the server
         try:
-            connection_result = await self.server_manager.connect_to_server(server_name)
+            connection_result = await self.server_manager.connect_to_configured_server(server_name)
             result_text = f"Successfully connected to server: {server_name}"
             final_text.append(f"[Server management] {result_text}")
             
@@ -507,22 +507,14 @@ class ConversationManager:
             "count": len(connected_servers)
         }
         
-        for server_name, server_info in connected_servers.items():
-            # Extract relevant info about the server and its tools
-            tools_info = self.server_manager.get_server_tools(server_name)
-            result["connected_servers"][server_name] = {
-                "type": server_info.get("type", "unknown"),
-                "tools_count": len(tools_info),
-                "tools": [tool["function"]["name"] for tool in tools_info if "function" in tool]
-            }
+        for server_name, tools in connected_servers.items():
+            result["connected_servers"][server_name] = tools
         
         # Format for display
         if connected_servers:
             server_list = []
-            for server_name, info in connected_servers.items():
-                tools = self.server_manager.get_server_tools(server_name)
-                tool_names = [tool["function"]["name"] for tool in tools if "function" in tool]
-                server_list.append(f"{server_name} - Available tools: {', '.join(tool_names)}")
+            for server_name, tools in connected_servers.items():
+                server_list.append(f"{server_name} - Available tools: {', '.join(tools)}")
             
             result_text = f"Connected servers ({len(connected_servers)}):\n" + "\n".join(server_list)
         else:
@@ -532,7 +524,3 @@ class ConversationManager:
         
         # Update message history
         self._update_message_history(messages, tool_call, json.dumps(result))
-        
-        # Get follow-up response
-        await self._get_follow_up_response(messages, messages[-2].get("tools", []), final_text)
-        

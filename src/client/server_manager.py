@@ -5,8 +5,7 @@ Server Manager module for handling MCP server connections.
 import logging
 import os
 import shutil
-import json
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any
 from contextlib import AsyncExitStack
 
 from mcp import ClientSession, StdioServerParameters
@@ -26,6 +25,58 @@ class ServerManager:
         self.exit_stack = AsyncExitStack()
         self.config_manager = ServerConfigManager()
         logger.info("ServerManager initialized")
+        
+    def get_server(self, server_name: str) -> Optional[ServerConnection]:
+        """
+        Get a server connection by name
+        
+        Args:
+            server_name: Name of the server
+            
+        Returns:
+            Server connection or None if not found
+        """
+        return self.servers.get(server_name)
+        
+    def collect_all_tools(self) -> List[Dict[str, Any]]:
+        """
+        Collect tools from all connected servers
+        
+        Returns:
+            List of all available tools in OpenAI format
+        """
+        all_tools = []
+        for server in self.servers.values():
+            all_tools.extend(server.get_openai_format_tools())
+        
+        num_servers = len(self.servers)
+        num_tools = len(all_tools)
+        if num_servers > 0:
+            logger.info(f"Collected {num_tools} tools from {num_servers} servers")
+        else:
+            logger.info("No servers connected yet. Only server management tools will be available.")
+            
+        return all_tools
+        
+    def get_server_tools(self, server_name: str) -> List[Dict[str, Any]]:
+        """
+        Get tools from a specific server
+        
+        Args:
+            server_name: Name of the server
+            
+        Returns:
+            List of tools in OpenAI format
+        """
+        server = self.get_server(server_name)
+        if server:
+            return server.get_openai_format_tools()
+        return []
+        
+    async def cleanup(self) -> None:
+        """Clean up resources"""
+        logger.info("Cleaning up server connections")
+        await self.exit_stack.aclose()
     
     async def connect_to_server(self, server_script_path: str) -> str:
         """
@@ -136,7 +187,7 @@ class ServerManager:
         await session.initialize()
         return session
         
-    def _create_script_server_params(self, script_path: str) -> Tuple[str, StdioServerParameters]:
+    def _create_script_server_params(self, script_path: str) -> tuple[str, StdioServerParameters]:
         """
         Create server parameters for a script path
         
@@ -209,119 +260,3 @@ class ServerManager:
             args=args,
             env=env
         )
-    
-    def get_connected_servers(self) -> Dict[str, List[str]]:
-        """
-        Get information about connected servers and their tools
-        
-        Returns:
-            Dictionary mapping server names to lists of tool names
-        """
-        server_info = {}
-        for name, server in self.servers.items():
-            server_info[name] = server.get_tool_names()
-        return server_info
-        
-    def get_primary_server(self) -> Optional[str]:
-        """
-        Get the name of the primary server if any
-        
-        Returns:
-            Name of the primary server or None if no servers are connected
-        """
-        if not self.servers:
-            return None
-        return next(iter(self.servers))
-        
-    async def get_available_configured_servers(self) -> List[str]:
-        """
-        Get list of available configured servers
-        
-        Returns:
-            List of server names from configuration
-        """
-        try:
-            config = self.config_manager.load_config()
-            return list(config.keys())
-        except Exception as e:
-            logger.error(f"Error loading server configuration: {e}")
-            return []
-    
-    async def get_available_servers(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Get all available servers (both configured and local)
-        
-        Returns:
-            Dictionary mapping server names to their source information
-        """
-        available_servers = {}
-        
-        # Add configured servers from config file
-        try:
-            config = self.config_manager.load_config()
-            for server_name, server_config in config.items():
-                available_servers[server_name] = {
-                    "type": "configured",
-                    "source": "server_config.json",
-                    "command": server_config.get("command", ""),
-                    "args": server_config.get("args", [])
-                }
-        except Exception as e:
-            logger.error(f"Error loading server configuration: {e}")
-        
-        # Look for common local server paths
-        common_paths = [
-            "server/main.py",
-            "src/server/main.py",
-            "server/server.py",
-            "src/server/server.py"
-        ]
-        
-        for path in common_paths:
-            if os.path.isfile(path):
-                server_name = os.path.basename(os.path.dirname(path))
-                available_servers[server_name] = {
-                    "type": "local_script",
-                    "source": path,
-                    "command": "python",
-                    "args": [path]
-                }
-        
-        return available_servers
-    
-    def get_server(self, server_name: str) -> Optional[ServerConnection]:
-        """
-        Get a server connection by name
-        
-        Args:
-            server_name: Name of the server
-            
-        Returns:
-            Server connection or None if not found
-        """
-        return self.servers.get(server_name)
-    
-    def collect_all_tools(self) -> List[Dict[str, Any]]:
-        """
-        Collect tools from all connected servers
-        
-        Returns:
-            List of all available tools in OpenAI format
-        """
-        all_tools = []
-        for server in self.servers.values():
-            all_tools.extend(server.get_openai_format_tools())
-        
-        num_servers = len(self.servers)
-        num_tools = len(all_tools)
-        if num_servers > 0:
-            logger.info(f"Collected {num_tools} tools from {num_servers} servers")
-        else:
-            logger.info("No servers connected yet. Only server management tools will be available.")
-            
-        return all_tools
-    
-    async def cleanup(self) -> None:
-        """Clean up resources"""
-        logger.info("Cleaning up server connections")
-        await self.exit_stack.aclose() 
