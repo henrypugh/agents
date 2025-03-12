@@ -6,6 +6,8 @@ import logging
 import json
 from typing import Dict, List, Optional, Any
 
+from traceloop.sdk.decorators import tool
+from traceloop.sdk import Traceloop
 from .server_manager import ServerManager
 
 logger = logging.getLogger("ToolProcessor")
@@ -45,6 +47,7 @@ class ToolProcessor:
                         return tool["function"]["metadata"]["server"]
         return None
     
+    @tool(name="execute_tool")
     async def execute_tool(
         self,
         tool_name: str,
@@ -65,6 +68,13 @@ class ToolProcessor:
         Raises:
             ValueError: If the server is not found
         """
+        # Associate this tool execution with the tool name and server for tracing
+        Traceloop.set_association_properties({
+            "tool_name": tool_name,
+            "server_name": server_name,
+            "tool_args": json.dumps(tool_args)[:200] if tool_args else "{}"
+        })
+        
         server = self.server_manager.get_server(server_name)
         if not server:
             raise ValueError(f"Server '{server_name}' not found")
@@ -96,4 +106,4 @@ class ToolProcessor:
         elif isinstance(result.content, str):
             return result.content
         else:
-            return str(result.content) 
+            return str(result.content)

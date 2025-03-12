@@ -10,13 +10,15 @@ import json
 import re
 import asyncio
 from typing import Dict, List, Any, Optional
-from traceloop.sdk.decorators import agent
+from traceloop.sdk.decorators import workflow, task, agent
+from traceloop.sdk import Traceloop
 from src.client.llm_client import LLMClient
 from src.client.server_manager import ServerManager
 from src.client.tool_processor import ToolProcessor
 
 logger = logging.getLogger("SimpleAgent")
 
+@agent(name="code_analysis_agent")
 class SimpleAgent:
     """
     A lightweight, self-directing agent that can analyze code and documentation.
@@ -56,6 +58,7 @@ class SimpleAgent:
         
         logger.info("SimpleAgent initialized")
     
+    @workflow(name="execute_task")
     async def execute_task(self, task: str) -> str:
         """
         Execute a self-directed task
@@ -66,6 +69,13 @@ class SimpleAgent:
         Returns:
             Results and recommendations
         """
+        # Set association properties for tracing
+        Traceloop.set_association_properties({
+            "task_id": str(id(task)),  # Use a more persistent ID in production
+            "task_type": "code_analysis",
+            "task_description": task[:50] + "..." if len(task) > 50 else task
+        })
+        
         logger.info(f"Starting self-directed task: {task}")
         
         # Update conversation history
@@ -74,7 +84,6 @@ class SimpleAgent:
         try:
             # Step 1: Get the agent to formulate a plan
             plan = await self._create_plan(task)
-            # print the plan
             logger.info(f"Created plan with {len(plan.get('steps', []))} steps")
             logger.info(f"Plan: {plan}")
             
@@ -110,6 +119,7 @@ class SimpleAgent:
             "content": content
         })
     
+    @task(name="create_plan")
     async def _create_plan(self, task: str) -> Dict[str, Any]:
         """
         Have the agent create its own plan
@@ -157,14 +167,18 @@ class SimpleAgent:
         Make sure your plan is comprehensive and addresses all parts of the task.
         """
         
+        # Set prompt version for tracing
+        Traceloop.set_prompt(
+            "Create a plan template: {task}",
+            {"task": task},
+            version=1
+        )
+        
         # Get the plan from LLM
         messages = [{"role": "user", "content": prompt}]
         response = await self.llm_client.get_completion(
             messages,
-            [],  # No tools for planning
-            # model=self.config["model"],
-            # temperature=self.config["temperature"],
-            # max_tokens=self.config["max_tokens"]
+            []  # No tools for planning
         )
         
         # Extract JSON plan
@@ -198,6 +212,7 @@ class SimpleAgent:
             # Return empty plan if parsing fails
             return {"steps": []}
     
+    @task(name="execute_plan")
     async def _execute_plan(self, plan: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Execute the agent's plan
@@ -217,6 +232,13 @@ class SimpleAgent:
             tool_name = step.get("tool")
             server_name = step.get("server")
             args = step.get("args", {})
+            
+            # Add step association properties for tracing
+            Traceloop.set_association_properties({
+                "step_number": step_num,
+                "step_description": description[:50] + "..." if len(description) > 50 else description,
+                "step_tool": tool_name or "none",
+            })
             
             logger.info(f"Executing step {step_num}/{len(steps)}: {description}")
             
@@ -259,6 +281,7 @@ class SimpleAgent:
             
         return results
     
+    @task(name="generate_recommendations")
     async def _generate_recommendations(
         self,
         task: str,
@@ -299,14 +322,18 @@ class SimpleAgent:
         Make your response conversational and helpful. Focus on providing actionable insights.
         """
         
+        # Set prompt version for tracing
+        Traceloop.set_prompt(
+            "Generate recommendations for task: {task}",
+            {"task": task},
+            version=1
+        )
+        
         # Get recommendations from LLM
         messages = [{"role": "user", "content": prompt}]
         response = await self.llm_client.get_completion(
             messages,
-            [],  # No tools for recommendations
-            # model=self.config["model"],
-            # temperature=self.config["temperature"],
-            # max_tokens=self.config["max_tokens"]
+            []  # No tools for recommendations
         )
         
         return response.choices[0].message.content

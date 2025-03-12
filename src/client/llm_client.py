@@ -4,6 +4,7 @@ from typing import Dict, List, Any
 
 from openai import OpenAI
 from decouple import config
+from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
 logger = logging.getLogger("LLMClient")
 
@@ -23,13 +24,33 @@ class LLMClient:
         try:
             logger.info("Making API call to LLM")
             logger.debug(f"Sending messages: {json.dumps(messages, indent=2)}")
-            # logger.debug(f"Available tools: {json.dumps(tools, indent=2)}")
             
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=tools,
-            )
+            with track_llm_call(vendor="openrouter", type="chat") as span:
+                # Report the request to Traceloop - note that we don't pass tools parameter here
+                llm_messages = []
+                for msg in messages:
+                    llm_messages.append(LLMMessage(
+                        role=msg.get("role", "user"),
+                        content=msg.get("content", "")
+                    ))
+                
+                span.report_request(
+                    model=self.model,
+                    messages=llm_messages
+                )
+                
+                # Make the actual API call with tools as before
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=tools,
+                )
+                
+                # Report the response to Traceloop
+                span.report_response(
+                    self.model,
+                    [choice.message.content for choice in response.choices if hasattr(choice.message, "content")]
+                )
             
             logger.debug(f"LLM API response received")
             return response
