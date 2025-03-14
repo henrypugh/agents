@@ -1,6 +1,8 @@
 """
-Refactored MCP Client implementation with improved structure and organization.
-This module handles connections to multiple MCP servers and interacts with an LLM.
+Agent module for orchestrating MCP interactions and LLM processing.
+
+This module provides the central coordinating component that handles connections 
+to multiple MCP servers and interacts with LLMs.
 """
 
 import logging
@@ -11,14 +13,14 @@ import uuid
 from traceloop.sdk.decorators import workflow, task
 from traceloop.sdk import Traceloop
 
-from .server_manager import ServerManager
-from .conversation_manager import ConversationManager
-from .tool_processor import ToolProcessor
-from .llm_client import LLMClient
+from .server_registry import ServerRegistry
+from .conversation import Conversation
+from .tool_processor import ToolExecutor
+from .llm_service import LLMService
 
-logger = logging.getLogger("MCPClient")
+logger = logging.getLogger("Agent")
 
-class MCPClient:
+class Agent:
     """Client for interacting with MCP servers and LLMs"""
     
     def __init__(self, model: str = "google/gemini-2.0-flash-001"):
@@ -32,10 +34,10 @@ class MCPClient:
         client_id = str(uuid.uuid4())
         
         # Initialize components
-        self.llm_client = LLMClient(model)
-        self.server_manager = ServerManager()
-        self.tool_processor = ToolProcessor(self.server_manager)
-        self.conversation_manager = ConversationManager(
+        self.llm_client = LLMService(model)
+        self.server_manager = ServerRegistry()
+        self.tool_processor = ToolExecutor(self.server_manager)
+        self.conversation_manager = Conversation(
             self.llm_client,
             self.server_manager,
             self.tool_processor
@@ -47,7 +49,7 @@ class MCPClient:
             "model": model
         })
         
-        logger.info("MCPClient initialized with model: %s", model)
+        logger.info("Agent initialized with model: %s", model)
         
     @workflow(name="connect_server_by_script")
     async def connect_to_server(self, server_script_path: str) -> str:

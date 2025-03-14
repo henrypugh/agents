@@ -4,9 +4,9 @@ from typing import Dict, Any
 from decouple import config
 import logging
 
-logger = logging.getLogger("ServerConfigManager")
+logger = logging.getLogger("ServerConfig")
 
-class ServerConfigManager:
+class ServerConfig:
     """Manages server configurations and environment variables"""
     
     def __init__(self, config_path: str = "server_config.json"):

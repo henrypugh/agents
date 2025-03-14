@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from dotenv import load_dotenv
 from src.utils.logger_setup import setup_logging
-from src.client.mcp_client import MCPClient
+from src.client.agent import Agent
 
 # Setup logging
 logger = setup_logging()
@@ -30,7 +30,7 @@ async def main() -> None:
     model = os.getenv("DEFAULT_LLM_MODEL", "google/gemini-2.0-flash-001")
     
     # Initialize client
-    client = MCPClient(model=model)
+    client = Agent(model=model)
     
     try:
         # Pre-connect to requested servers if any

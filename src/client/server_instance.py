@@ -5,7 +5,7 @@ from mcp import ClientSession
 from traceloop.sdk.decorators import workflow, task, tool
 from traceloop.sdk import Traceloop
 
-class ServerConnection:
+class ServerInstance:
     """Manages the connection to a single MCP server"""
     
     def __init__(self, server_name: str, session: ClientSession):

@@ -74,11 +74,11 @@ The project follows a modular architecture organized around these core component
 
 ### First Refactoring (Current)
 - Split monolithic design into specialized components
-- Introduced `ServerManager` to handle server connection lifecycle
-- Created `ConversationManager` to handle LLM interaction
-- Added `ToolProcessor` to handle tool routing and execution
-- Separated `ServerConnection` to encapsulate individual server connections
-- Updated `MCPClient` to orchestrate these components
+- Introduced `ServerRegistry` to handle server connection lifecycle
+- Created `Conversation` to handle LLM interaction
+- Added `ToolExecutor` to handle tool routing and execution
+- Separated `ServerInstance` to encapsulate individual server connections
+- Updated `Agent` to orchestrate these components
 
 ### Key Design Decisions
 
@@ -288,11 +288,11 @@ The dynamic server connection is a core feature that allows the LLM to discover 
 ### Implementation Details
 
 1. **Server Management Tools**
-   - The `ConversationManager` adds special server management tools to the LLM
+   - The `Conversation` adds special server management tools to the LLM
    - These tools allow the LLM to list, connect to, and use servers
 
 2. **Server Discovery**
-   - The `ServerManager.get_available_servers()` method discovers available servers:
+   - The `ServerRegistry.get_available_servers()` method discovers available servers:
      - Reads server configurations from `server_config.json`
      - Looks for common server script paths in the project
 
@@ -307,7 +307,7 @@ The dynamic server connection is a core feature that allows the LLM to discover 
 
 4. **Connection Lifecycle Management**
    - Connections are maintained throughout the session
-   - The `AsyncExitStack` in `ServerManager` ensures proper cleanup
+   - The `AsyncExitStack` in `ServerRegistry` ensures proper cleanup
    - Connections can be manually disconnected or automatically closed on exit
 
 ### Critical Implementation Notes
@@ -351,25 +351,25 @@ User Query -> MCP Client -> Conversation Manager -> LLM Client -> OpenRouter API
 ### Tool Execution Flow
 
 1. LLM generates tool call with name and arguments
-2. `ConversationManager._process_tool_call()` processes the tool call
-3. `ToolProcessor.find_server_for_tool()` identifies the server for the tool
-4. `ToolProcessor.execute_tool()` executes the tool on the appropriate server
-5. `ServerConnection.execute_tool()` sends the tool call to the MCP server
+2. `Conversation._process_tool_call()` processes the tool call
+3. `ToolExecutor.find_server_for_tool()` identifies the server for the tool
+4. `ToolExecutor.execute_tool()` executes the tool on the appropriate server
+5. `ServerInstance.execute_tool()` sends the tool call to the MCP server
 6. Server executes the tool and returns the result
-7. `ToolProcessor.extract_result_text()` extracts text from the result
-8. `ConversationManager._update_message_history()` updates conversation history
-9. `ConversationManager._get_follow_up_response()` gets follow-up response from LLM
+7. `ToolExecutor.extract_result_text()` extracts text from the result
+8. `Conversation._update_message_history()` updates conversation history
+9. `Conversation._get_follow_up_response()` gets follow-up response from LLM
 10. Final response is returned to the user
 
 ### Server Connection Flow
 
-1. `ServerManager.connect_to_configured_server()` or `connect_to_server()` is called
+1. `ServerRegistry.connect_to_configured_server()` or `connect_to_server()` is called
 2. Server parameters are created using config or script path
-3. `ServerManager._create_server_session()` creates MCP session
-4. `ServerConnection.initialize()` initializes the server connection
-5. `ServerConnection.refresh_tools()` discovers available tools
-6. Connection is stored in `ServerManager.servers` dictionary
-7. Tools are available for use through `ServerManager.collect_all_tools()`
+3. `ServerRegistry._create_server_session()` creates MCP session
+4. `ServerInstance.initialize()` initializes the server connection
+5. `ServerInstance.refresh_tools()` discovers available tools
+6. Connection is stored in `ServerRegistry.servers` dictionary
+7. Tools are available for use through `ServerRegistry.collect_all_tools()`
 
 ## Implementation Details to Remember
 

@@ -18,8 +18,8 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from dotenv import load_dotenv
 from src.utils.logger_setup import setup_logging
-from src.client.mcp_client import MCPClient
-from src.client.tool_processor import ToolProcessor
+from src.client.agent import Agent
+from src.client.tool_processor import ToolExecutor
 from simple_agent import SimpleAgent
 
 # Setup tracing
@@ -106,7 +106,7 @@ async def main():
     })
     
     # Initialize MCP client
-    client = MCPClient(model=args.model)
+    client = Agent(model=args.model)
     
     try:
         # Start main server (which has filesystem tools)
@@ -152,7 +152,7 @@ async def main():
         })
         
         # Create tool processor
-        tool_processor = ToolProcessor(client.server_manager)
+        tool_processor = ToolExecutor(client.server_manager)
         
         # Create SimpleAgent
         logger.info("Initializing SimpleAgent...")
@@ -205,13 +205,6 @@ async def main():
         print("=" * 80 + "\n")
         print(result)
         
-        # Record successful execution for annotations
-        Traceloop.user_feedback.create(
-            "agent_task_feedback",
-            task_id,
-            {"execution_status": "success"}
-        )
-        
     except Exception as e:
         logger.error(f"Error running SimpleAgent: {str(e)}", exc_info=True)
         print(f"\nError: {str(e)}")
@@ -224,13 +217,6 @@ async def main():
             "execution_end_time": time.time(),
             "execution_duration": time.time() - start_time
         })
-        
-        # Record error for annotations
-        Traceloop.user_feedback.create(
-            "agent_task_feedback",
-            task_id,
-            {"execution_status": "error", "error_type": type(e).__name__}
-        )
         
     finally:
         # Clean up resources

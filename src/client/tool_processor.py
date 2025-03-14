@@ -12,14 +12,14 @@ from traceloop.sdk.decorators import workflow, task, tool
 from traceloop.sdk import Traceloop
 from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
-from .server_manager import ServerManager
+from .server_registry import ServerRegistry
 
-logger = logging.getLogger("ToolProcessor")
+logger = logging.getLogger("ToolExecutor")
 
-class ToolProcessor:
+class ToolExecutor:
     """Processes and executes tool calls from LLMs"""
     
-    def __init__(self, server_manager: ServerManager):
+    def __init__(self, server_manager: ServerRegistry):
         """
         Initialize the tool processor
         
@@ -36,7 +36,7 @@ class ToolProcessor:
             "processor_id": processor_id
         })
         
-        logger.info("ToolProcessor initialized")
+        logger.info("ToolExecutor initialized")
     
     @task(name="find_server_for_tool")
     def find_server_for_tool(self, tool_name: str, tools: List[Dict[str, Any]]) -> Optional[str]:

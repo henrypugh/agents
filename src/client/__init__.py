@@ -2,9 +2,8 @@
 """
 Client modules for MCP interaction
 """
-from .mcp_client import MCPClient
-from .llm_client import LLMClient
-from .tool_manager import ToolManager
+from .agent import Agent
+from .llm_service import LLMService
 
-__all__ = ['MCPClient', 'LLMClient', 'ToolManager']
+__all__ = ['Agent', 'LLMService']
 

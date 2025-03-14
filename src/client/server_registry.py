@@ -14,22 +14,22 @@ from mcp.client.stdio import stdio_client
 from traceloop.sdk.decorators import workflow, task
 from traceloop.sdk import Traceloop
 
-from .server_config import ServerConfigManager
-from .server_connection import ServerConnection
+from .server_config import ServerConfig
+from .server_instance import ServerInstance
 
-logger = logging.getLogger("ServerManager")
+logger = logging.getLogger("ServerRegistry")
 
-class ServerManager:
+class ServerRegistry:
     """Manages connections to MCP servers"""
     
     def __init__(self):
         """Initialize the server manager"""
         self.servers = {}  # Dictionary to store server connections
         self.exit_stack = AsyncExitStack()
-        self.config_manager = ServerConfigManager()
-        logger.info("ServerManager initialized")
+        self.config_manager = ServerConfig()
+        logger.info("ServerRegistry initialized")
         
-    def get_server(self, server_name: str) -> Optional[ServerConnection]:
+    def get_server(self, server_name: str) -> Optional[ServerInstance]:
         """
         Get a server connection by name
         
@@ -117,7 +117,7 @@ class ServerManager:
         
         # Connect and create server connection
         session = await self._create_server_session(server_params)
-        server = ServerConnection(server_name, session)
+        server = ServerInstance(server_name, session)
         await server.initialize()
         
         # Store server connection
@@ -175,7 +175,7 @@ class ServerManager:
             
             # Connect and create server connection
             session = await self._create_server_session(server_params)
-            server = ServerConnection(server_name, session)
+            server = ServerInstance(server_name, session)
             await server.initialize()
             
             # Store server connection

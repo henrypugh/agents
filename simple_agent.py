@@ -18,9 +18,9 @@ from traceloop.sdk.decorators import workflow, task, agent, tool
 from traceloop.sdk import Traceloop
 from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
-from src.client.llm_client import LLMClient
-from src.client.server_manager import ServerManager
-from src.client.tool_processor import ToolProcessor
+from src.client.llm_service import LLMService
+from src.client.server_registry import ServerRegistry
+from src.client.tool_processor import ToolExecutor
 
 logger = logging.getLogger("SimpleAgent")
 
@@ -37,9 +37,9 @@ class SimpleAgent:
     
     def __init__(
         self, 
-        llm_client: LLMClient, 
-        server_manager: ServerManager,
-        tool_processor: ToolProcessor,
+        llm_client: LLMService, 
+        server_manager: ServerRegistry,
+        tool_processor: ToolExecutor,
         config: Dict[str, Any] = None
     ):
         """

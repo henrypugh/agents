@@ -6,9 +6,9 @@ from openai import OpenAI
 from decouple import config
 from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
-logger = logging.getLogger("LLMClient")
+logger = logging.getLogger("LLMService")
 
-class LLMClient:
+class LLMService:
     """Handles communication with the OpenRouter API"""
     
     def __init__(self, model: str = "google/gemini-2.0-flash-001"):

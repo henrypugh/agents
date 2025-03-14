@@ -10,20 +10,20 @@ from traceloop.sdk.decorators import workflow, task
 from traceloop.sdk import Traceloop
 from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
-from .llm_client import LLMClient
-from .server_manager import ServerManager
-from .tool_processor import ToolProcessor
+from .llm_service import LLMService
+from .server_registry import ServerRegistry
+from .tool_processor import ToolExecutor
 
-logger = logging.getLogger("ConversationManager")
+logger = logging.getLogger("Conversation")
 
-class ConversationManager:
+class Conversation:
     """Manages conversations with LLMs and tool execution"""
     
     def __init__(
         self, 
-        llm_client: LLMClient, 
-        server_manager: ServerManager,
-        tool_processor: ToolProcessor
+        llm_client: LLMService, 
+        server_manager: ServerRegistry,
+        tool_processor: ToolExecutor
     ):
         """
         Initialize the conversation manager
@@ -37,7 +37,7 @@ class ConversationManager:
         self.server_manager = server_manager
         self.tool_processor = tool_processor
         self.server_management_tools = self._create_server_management_tools()
-        logger.info("ConversationManager initialized")
+        logger.info("Conversation initialized")
     
     def _create_server_management_tools(self) -> List[Dict[str, Any]]:
         """
