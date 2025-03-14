@@ -8,17 +8,17 @@ The project follows a modular architecture organized around these core component
 
 ```
 ┌─────────────────────────────────────────┐
-│             Agent (main)                │
+│             MCP Client (main)           │
 └─┬─────────────────┬──────────────────┬──┘
   │                 │                  │
   ▼                 ▼                  ▼
 ┌─────────┐   ┌───────────────┐   ┌──────────────┐
-│LLMService│   │ServerRegistry │   │Conversation  │
-└─────────┘   └───────┬───────┘   └───────┬──────┘
-                      │                   │
+│LLM Client│   │Server Manager │   │Conversation  │
+└─────────┘   └───────┬───────┘   │Manager       │
+                      │           └───────┬──────┘
                       ▼                   │
               ┌────────────────┐         │
-              │ServerInstance  │◄────────┘
+              │Server Connection│◄────────┘
               └────────┬───────┘
                        │
                        ▼
@@ -33,52 +33,37 @@ The project follows a modular architecture organized around these core component
    - Entry point that parses CLI args and initializes core components
    - Manages pre-connection to servers and the main chat loop
 
-2. **Agent (`src/client/agent.py`)**
+2. **MCP Client (`src/client/mcp_client.py`)**
    - Core orchestrator that delegates to specialized components
    - Maintains the chat loop and handles user interactions
    - Exposes public API for connecting to servers and processing queries
 
-3. **Conversation (`src/client/conversation.py`)**
+3. **Conversation Manager (`src/client/conversation_manager.py`)**
    - Manages LLM interaction and conversation flow
    - Processes queries through the LLM
    - Handles tool calls and results processing
    - Contains server management tools logic
 
-4. **ServerRegistry (`src/client/server_registry.py`)**
+4. **Server Manager (`src/client/server_manager.py`)**
    - Manages creation and lifecycle of server connections
    - Stores server connection instances
    - Handles discovery of available servers
    - Collects tools from all connected servers
 
-5. **ToolExecutor (`src/client/tool_processor.py`)**
+5. **Tool Processor (`src/client/tool_processor.py`)**
    - Processes tool calls from the LLM
    - Routes tools to appropriate servers
    - Handles tool execution and error handling
 
-6. **ServerInstance (`src/client/server_instance.py`)**
+6. **Server Connection (`src/client/server_connection.py`)**
    - Encapsulates connection to individual MCP servers
    - Handles initialization and tool discovery
    - Executes tool calls on specific servers
 
-7. **LLMService (`src/client/llm_service.py`)**
+7. **LLM Client (`src/client/llm_client.py`)**
    - Handles communication with the OpenRouter API
    - Formats messages and tools for the LLM
    - Processes LLM responses
-
-8. **ServerConfig (`src/client/server_config.py`)**
-   - Manages server configurations and environment variables
-   - Handles loading and parsing of server configuration files
-   - Processes environment variables for server connections
-
-9. **SimpleAgent (`simple_agent.py`)**
-   - Self-directed agent for code analysis tasks
-   - Creates and executes plans using available tools
-   - Generates recommendations based on findings
-
-10. **Agent Runner (`agent_runner.py`)**
-    - Runner script for SimpleAgent
-    - Initializes and runs the SimpleAgent for code analysis tasks
-    - Processes command line arguments and task inputs
 
 ## Refactoring History & Design Decisions
 
@@ -87,21 +72,13 @@ The project follows a modular architecture organized around these core component
 - Implemented basic functionality for connecting to MCP servers
 - Added LLM integration with OpenRouter
 
-### First Refactoring (Previous)
+### First Refactoring (Current)
 - Split monolithic design into specialized components
 - Introduced `ServerRegistry` to handle server connection lifecycle
 - Created `Conversation` to handle LLM interaction
 - Added `ToolExecutor` to handle tool routing and execution
 - Separated `ServerInstance` to encapsulate individual server connections
 - Updated `Agent` to orchestrate these components
-
-### Second Refactoring (Current)
-- Renamed components for clarity and consistency
-- Added `ServerConfig` for better configuration management
-- Implemented `SimpleAgent` for self-directed code analysis tasks
-- Added observability with Traceloop integration
-- Improved error handling and recovery mechanisms
-- Enhanced tool execution flow
 
 ### Key Design Decisions
 
@@ -130,14 +107,9 @@ The project follows a modular architecture organized around these core component
    - Environment variables for sensitive information
    - Server configs dynamically processed at runtime
 
-6. **Observability**
-   - Traceloop integration for tracing and monitoring
-   - Consistent logging throughout the codebase
-   - Detailed metrics on operations and performance
-
 ## Component Breakdown
 
-### Agent
+### MCP Client
 - **Purpose**: Main entry point and coordinator
 - **Responsibilities**:
   - Initialize components
@@ -151,7 +123,7 @@ The project follows a modular architecture organized around these core component
   - `chat_loop()`: Run interactive chat loop
   - `cleanup()`: Clean up resources
 
-### ServerRegistry
+### Server Manager
 - **Purpose**: Manage server connections
 - **Responsibilities**:
   - Create and store server connections
@@ -167,7 +139,7 @@ The project follows a modular architecture organized around these core component
   - `get_available_servers()`: Get all available servers
   - `cleanup()`: Clean up server connections
 
-### Conversation
+### Conversation Manager
 - **Purpose**: Manage LLM conversations
 - **Responsibilities**:
   - Process queries through LLM
@@ -182,7 +154,7 @@ The project follows a modular architecture organized around these core component
   - `_handle_server_management_tool()`: Handle server management tools
   - `_get_follow_up_response()`: Get follow-up response after tool execution
 
-### ToolExecutor
+### Tool Processor
 - **Purpose**: Process tool calls
 - **Responsibilities**:
   - Find server for tool
@@ -193,7 +165,7 @@ The project follows a modular architecture organized around these core component
   - `execute_tool()`: Execute tool on server
   - `extract_result_text()`: Extract text from tool result
 
-### ServerInstance
+### Server Connection
 - **Purpose**: Encapsulate connection to MCP server
 - **Responsibilities**:
   - Maintain connection to server
@@ -207,7 +179,7 @@ The project follows a modular architecture organized around these core component
   - `get_tool_names()`: Get list of tool names
   - `get_openai_format_tools()`: Get tools in OpenAI format
 
-### LLMService
+### LLM Client
 - **Purpose**: Communicate with LLM API
 - **Responsibilities**:
   - Format messages and tools for LLM
@@ -215,29 +187,6 @@ The project follows a modular architecture organized around these core component
   - Process LLM responses
 - **Key Methods**:
   - `get_completion()`: Get completion from LLM
-
-### ServerConfig
-- **Purpose**: Manage server configurations
-- **Responsibilities**:
-  - Load and parse configuration files
-  - Retrieve server configurations
-  - Process environment variables
-- **Key Methods**:
-  - `load_config()`: Load server configuration file
-  - `get_server_config()`: Get configuration for specific server
-  - `process_environment_variables()`: Process environment variables
-
-### SimpleAgent
-- **Purpose**: Self-directed agent for code analysis
-- **Responsibilities**:
-  - Create plans for tasks
-  - Execute plans using available tools
-  - Generate recommendations
-- **Key Methods**:
-  - `execute_task()`: Execute a self-directed task
-  - `_create_plan()`: Create a plan for a task
-  - `_execute_plan()`: Execute the created plan
-  - `_generate_recommendations()`: Generate recommendations from results
 
 ## Developer Cheatsheet
 
@@ -256,9 +205,6 @@ python main.py --server brave-search
 
 # Pre-connect to multiple servers
 python main.py server/main.py --server brave-search
-
-# Run SimpleAgent with a specific task
-python agent_runner.py "Review my codebase structure"
 ```
 
 **Development commands:**
@@ -270,13 +216,12 @@ pip install -r requirements.txt
 # OPENROUTER_API_KEY=your-openrouter-api-key
 # BRAVE_API_KEY=your-brave-api-key
 # DEFAULT_LLM_MODEL=google/gemini-2.0-flash-001
-# TRACEL_API_KEY=your-traceloop-api-key
 
 # Run with verbose logging
 DEBUG=1 python main.py
 
 # Connect to specific server and inspect tools
-python main.py --server brave-search
+python main.py --server brave-search --inspect-tools
 ```
 
 ### Common Debugging Patterns
@@ -284,7 +229,7 @@ python main.py --server brave-search
 **Server connection issues:**
 ```python
 # Check if server is connected
-server = server_registry.get_server("server-name")
+server = server_manager.get_server("server-name")
 if server:
     # Server is connected
     tools = server.get_tool_names()
@@ -298,7 +243,7 @@ else:
 ```python
 # Execute tool with try/except
 try:
-    result = await server_instance.execute_tool(tool_name, tool_args)
+    result = await server_connection.execute_tool(tool_name, tool_args)
     print(f"Tool execution successful: {result}")
 except Exception as e:
     print(f"Tool execution failed: {e}")
@@ -378,29 +323,29 @@ The dynamic server connection is a core feature that allows the LLM to discover 
 ### Query Processing Flow
 
 ```
-User Query -> Agent -> Conversation -> LLMService -> OpenRouter API
-                           ↓
-                      LLM Response
-                           ↓
-                     Tool Call Needed?
-                     /           \
-                  No             Yes
-                   ↓               ↓
-            Final Response   ToolExecutor
-                                  ↓
-                           ServerRegistry
-                                  ↓
-                          ServerInstance
-                                  ↓
-                             MCP Server
-                                  ↓
-                           Tool Execution
-                                  ↓
-                            Tool Result
-                                  ↓
-                        Follow-up Response
-                                  ↓
-                           Final Response
+User Query -> MCP Client -> Conversation Manager -> LLM Client -> OpenRouter API
+                                     ↓
+                                LLM Response
+                                     ↓
+                             Tool Call Needed?
+                             /           \
+                          No             Yes
+                           ↓               ↓
+                    Final Response   Tool Processor
+                                          ↓
+                                   Server Manager
+                                          ↓
+                                  Server Connection
+                                          ↓
+                                     MCP Server
+                                          ↓
+                                   Tool Execution
+                                          ↓
+                                    Tool Result
+                                          ↓
+                                Follow-up Response
+                                          ↓
+                                   Final Response
 ```
 
 ### Tool Execution Flow
@@ -469,7 +414,3 @@ User Query -> Agent -> Conversation -> LLMService -> OpenRouter API
    - AsyncExitStack ensures proper cleanup of async resources
    - Manual resource cleanup may be needed in some error cases
 
-9. **Traceloop Integration**
-   - Use Traceloop's decorators for tracing workflows, tasks, and tools
-   - Set appropriate association properties for context
-   - Use manual tracking for fine-grained control
