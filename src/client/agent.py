@@ -52,7 +52,7 @@ class Agent:
         
         logger.info("Agent initialized with model: %s", model)
         
-    @server_connection
+    @server_connection()
     async def connect_to_server(self, server_script_path: str) -> str:
         """
         Connect to an MCP server using a script path
@@ -79,7 +79,7 @@ class Agent:
             logger.error(f"Failed to connect to server: {str(e)}")
             raise
             
-    @server_connection
+    @server_connection()
     async def connect_to_configured_server(self, server_name: str) -> Dict[str, Any]:
         """
         Connect to an MCP server defined in configuration
@@ -106,7 +106,7 @@ class Agent:
             logger.error(f"Failed to connect to configured server {server_name}: {str(e)}")
             raise
 
-    @message_processing
+    @message_processing()
     async def process_query(self, query: str) -> str:
         """
         Process a user query using the LLM and available tools
@@ -249,7 +249,7 @@ class Agent:
         """
         return await self.server_manager.get_available_configured_servers()
     
-    @resource_cleanup
+    @resource_cleanup()
     async def cleanup(self) -> None:
         """Clean up resources"""
         logger.info("Cleaning up resources")

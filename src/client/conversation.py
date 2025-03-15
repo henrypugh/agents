@@ -100,7 +100,7 @@ class Conversation:
             }
         ]
     
-    @message_processing
+    @message_processing()
     async def process_query(self, query: str) -> str:
         """
         Process a user query using the LLM and available tools
@@ -318,7 +318,7 @@ class Conversation:
             final_text
         )
     
-    @tool_execution
+    @tool_execution()
     async def _execute_and_process_tool(
         self,
         server_name: str,

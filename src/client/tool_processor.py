@@ -88,7 +88,7 @@ class ToolExecutor:
         
         return None
     
-    @tool_execution
+    @tool_execution()
     async def execute_tool(
         self,
         tool_name: str,

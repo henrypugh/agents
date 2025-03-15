@@ -25,7 +25,6 @@ def register_filesystem_tools(mcp: FastMCP) -> None:
         The MCP server instance
     """
     
-    @tool
     @mcp.tool()
     def get_working_directory() -> Dict[str, Any]:
         """
@@ -84,7 +83,6 @@ def register_filesystem_tools(mcp: FastMCP) -> None:
                 "status": "error"
             }
     
-    @tool
     @mcp.tool()
     def list_directory(path: str = ".") -> Dict[str, Any]:
         """
@@ -149,7 +147,6 @@ def register_filesystem_tools(mcp: FastMCP) -> None:
                 "status": "error"
             }
     
-    @tool
     @mcp.tool()
     def read_file(file_path: str) -> Dict[str, Any]:
         """
@@ -214,8 +211,6 @@ def register_filesystem_tools(mcp: FastMCP) -> None:
                 "error": str(e),
                 "status": "error"
             }
-    
-    @tool
     @mcp.tool()
     def search_files(
         directory: str = ".",
@@ -379,7 +374,6 @@ def register_filesystem_tools(mcp: FastMCP) -> None:
                 "status": "error"
             }
     
-    @tool
     @mcp.tool()
     def analyze_project_structure(
         root_dir: str = ".", 
@@ -521,7 +515,6 @@ def register_filesystem_tools(mcp: FastMCP) -> None:
                 "status": "error"
             }
     
-    @tool
     @mcp.tool()
     def get_file_info(file_path: str) -> Dict[str, Any]:
         """

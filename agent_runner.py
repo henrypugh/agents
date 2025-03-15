@@ -38,7 +38,7 @@ Traceloop.init(
 # Setup logging
 logger = setup_logging()
 
-@workflow
+@workflow()
 async def main():
     """Main entry point for the SimpleAgent runner"""
     # Generate a unique session ID
@@ -220,30 +220,43 @@ async def main():
         
         logger.info(f"Agent runner completed in {session_duration:.2f} seconds")
 
-@server_connection
+@server_connection()
 async def connect_to_main_server(client):
     """Connect to the main server"""
-    result = await client.connect_to_configured_server("main-server")
-    
-    if not result or result.get("status") not in ["connected", "already_connected"]:
-        logger.error("Failed to connect to main server")
+    try:
+        result = await client.connect_to_configured_server("main-server")
         
-        # Track connection failure
+        if not result or result.get("status") not in ["connected", "already_connected"]:
+            logger.error("Failed to connect to main server")
+            
+            # Track connection failure
+            Traceloop.set_association_properties({
+                "connection_stage": "failed",
+                "connection_error": "server_connection_failed"
+            })
+            
+            raise RuntimeError("Failed to connect to main server")
+            
+        # Track successful connection
         Traceloop.set_association_properties({
-            "connection_stage": "failed",
-            "connection_error": "server_connection_failed"
+            "connection_stage": "connected",
+            "tool_count": len(result.get("tools", []))
         })
         
-        raise RuntimeError("Failed to connect to main server")
+        logger.info("Successfully connected to main server")
+        return result
         
-    # Track successful connection
-    Traceloop.set_association_properties({
-        "connection_stage": "connected",
-        "tool_count": len(result.get("tools", []))
-    })
-    
-    logger.info("Successfully connected to main server")
-    return result
+    except Exception as e:
+        logger.error(f"Error connecting to main server: {str(e)}")
+        
+        # Track connection error
+        Traceloop.set_association_properties({
+            "connection_stage": "error",
+            "error_type": type(e).__name__,
+            "error_message": str(e)
+        })
+        
+        raise
 
 if __name__ == "__main__":
     asyncio.run(main())

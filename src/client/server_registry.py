@@ -77,13 +77,13 @@ class ServerRegistry:
             return server.get_openai_format_tools()
         return []
         
-    @resource_cleanup
+    @resource_cleanup()
     async def cleanup(self) -> None:
         """Clean up resources"""
         logger.info("Cleaning up server connections")
         await self.exit_stack.aclose()
     
-    @server_connection
+    @server_connection()
     async def connect_to_server(self, server_script_path: str) -> str:
         """
         Connect to an MCP server using a script path
@@ -116,7 +116,7 @@ class ServerRegistry:
         logger.info(f"Connected to server {server_name} with tools: {server.get_tool_names()}")
         return server_name
 
-    @server_connection
+    @server_connection()
     async def connect_to_configured_server(self, server_name: str) -> Dict[str, Any]:
         """
         Connect to an MCP server defined in configuration

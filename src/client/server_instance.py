@@ -16,7 +16,7 @@ class ServerInstance:
         self.tools = []
         self.connected_at = datetime.now()
         
-    @server_connection
+    @server_connection()
     async def initialize(self) -> None:
         """Initialize the connection and fetch tools"""
         await self.refresh_tools()
@@ -41,7 +41,7 @@ class ServerInstance:
         
         return self.tools
         
-    @tool_execution
+    @tool_execution()
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """
         Execute a tool on this server

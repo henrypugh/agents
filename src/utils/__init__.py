@@ -17,5 +17,6 @@ __all__ = [
     'tool_execution', 
     'llm_completion',
     'message_processing',
-    'resource_cleanup'
+    'resource_cleanup',
+    'workflow'  # Add this
 ]
