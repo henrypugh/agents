@@ -19,6 +19,7 @@ import time
 from typing import Dict, List, Any, Optional
 import uuid
 import hashlib
+from pydantic import BaseModel, Field, validator
 
 from traceloop.sdk.decorators import workflow, task, agent, tool
 from traceloop.sdk import Traceloop
@@ -26,6 +27,27 @@ from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
 
 logger = logging.getLogger("SimpleAgent")
+
+# Define Pydantic models for your data structures
+class PlanStep(BaseModel):
+    """Model representing a step in the agent's plan"""
+    description: str = Field(..., description="Description of the step")
+    tool: Optional[str] = Field(None, description="Tool to use for this step")
+    server: Optional[str] = Field(None, description="Server that provides the tool")
+    args: Dict[str, Any] = Field(default_factory=dict, description="Arguments for the tool")
+
+class Plan(BaseModel):
+    """Model representing the agent's execution plan"""
+    steps: List[PlanStep] = Field(default_factory=list, description="Steps in the plan")
+
+class StepResult(BaseModel):
+    """Model representing the result of executing a step"""
+    step: int = Field(..., description="Step number")
+    description: str = Field(..., description="Description of the step")
+    status: str = Field("pending", description="Status of the step execution")
+    tool_result: Optional[str] = Field(None, description="Result from tool execution")
+    error: Optional[str] = Field(None, description="Error message if execution failed")
+    note: Optional[str] = Field(None, description="Additional notes about the step")
 
 @agent(name="code_analysis_agent")
 class SimpleAgent:
@@ -110,7 +132,7 @@ class SimpleAgent:
         try:
             # Step 1: Get the agent to formulate a plan
             plan = await self._create_plan(task)
-            step_count = len(plan.get('steps', []))
+            step_count = len(plan.steps)
             
             logger.info(f"Created plan with {step_count} steps")
             
@@ -125,8 +147,8 @@ class SimpleAgent:
             results = await self._execute_plan(plan)
             
             # Track plan execution completion
-            success_count = sum(1 for r in results if r.get("status") == "success")
-            error_count = sum(1 for r in results if r.get("status") == "error")
+            success_count = sum(1 for r in results if r.status == "success")
+            error_count = sum(1 for r in results if r.status == "error")
             
             Traceloop.set_association_properties({
                 "plan_status": "executed",
@@ -197,7 +219,7 @@ class SimpleAgent:
         })
     
     @task(name="create_plan")
-    async def _create_plan(self, task: str) -> Dict[str, Any]:
+    async def _create_plan(self, task: str) -> Plan:
         """
         Have the agent create its own plan
         
@@ -205,7 +227,7 @@ class SimpleAgent:
             task: User task to plan for
             
         Returns:
-            Plan dictionary with steps
+            Plan object with steps
         """
         # Track plan creation start
         plan_creation_id = hashlib.md5(f"plan:{task}".encode()).hexdigest()[:12]
@@ -298,31 +320,30 @@ class SimpleAgent:
             # Find JSON in the response
             json_match = re.search(r'```(?:json)?\s*({.*?})\s*```', plan_text, re.DOTALL)
             if json_match:
-                plan = json.loads(json_match.group(1))
+                plan_dict = json.loads(json_match.group(1))
                 extraction_method = "code_block"
             else:
                 # Try to extract JSON without code blocks
                 json_match = re.search(r'({(?:\s*"steps"\s*:.*?})}', plan_text, re.DOTALL)
                 if json_match:
-                    plan = json.loads(json_match.group(1))
+                    plan_dict = json.loads(json_match.group(1))
                     extraction_method = "regex_match"
                 else:
                     logger.warning("Could not extract JSON plan, using manual extraction")
                     # Manual extraction as fallback
                     cleaned_text = re.sub(r'^[^{]*', '', plan_text).strip()
                     cleaned_text = re.sub(r'[^}]*$', '', cleaned_text).strip()
-                    plan = json.loads(cleaned_text)
+                    plan_dict = json.loads(cleaned_text)
                     extraction_method = "manual_fallback"
             
-            # Ensure plan has steps array
-            if "steps" not in plan:
-                plan["steps"] = []
+            # Convert to Pydantic model
+            plan = Plan.model_validate(plan_dict)
             
             # Track successful plan creation
             Traceloop.set_association_properties({
                 "planning_stage": "completed",
                 "plan_extraction_method": extraction_method,
-                "step_count": len(plan.get("steps", [])),
+                "step_count": len(plan.steps),
                 "plan_creation_status": "success"
             })
                 
@@ -339,34 +360,36 @@ class SimpleAgent:
             })
             
             # Return empty plan if parsing fails
-            return {"steps": []}
+            return Plan(steps=[])
+        except Exception as e:
+            logger.error(f"Failed to create plan: {str(e)}")
+            return Plan(steps=[])
     
     @task(name="execute_plan")
-    async def _execute_plan(self, plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def _execute_plan(self, plan: Plan) -> List[StepResult]:
         """
         Execute the agent's plan
         
         Args:
-            plan: Plan dictionary with steps
+            plan: Plan object with steps
             
         Returns:
             List of step results
         """
         results = []
-        steps = plan.get("steps", [])
         
         # Track plan execution start
         Traceloop.set_association_properties({
             "execution_stage": "started",
-            "total_steps": len(steps)
+            "total_steps": len(plan.steps)
         })
         
-        for i, step in enumerate(steps):
+        for i, step in enumerate(plan.steps):
             step_num = i + 1
-            description = step.get("description", f"Step {step_num}")
-            tool_name = step.get("tool")
-            server_name = step.get("server")
-            args = step.get("args", {})
+            description = step.description
+            tool_name = step.tool
+            server_name = step.server
+            args = step.args
             
             # Generate step ID for tracing
             step_id = hashlib.md5(f"step:{step_num}:{description}".encode()).hexdigest()[:12]
@@ -381,13 +404,13 @@ class SimpleAgent:
                 "step_args_count": len(args)
             })
             
-            logger.info(f"Executing step {step_num}/{len(steps)}: {description}")
+            logger.info(f"Executing step {step_num}/{len(plan.steps)}: {description}")
             
-            step_result = {
-                "step": step_num,
-                "description": description,
-                "status": "pending"
-            }
+            step_result = StepResult(
+                step=step_num,
+                description=description,
+                status="pending"
+            )
             
             try:
                 # Execute tool if specified
@@ -411,8 +434,8 @@ class SimpleAgent:
                     result_text = self.tool_processor.extract_result_text(result)
                     
                     # Update step result
-                    step_result["tool_result"] = result_text
-                    step_result["status"] = "success"
+                    step_result.tool_result = result_text
+                    step_result.status = "success"
                     
                     # Track successful tool execution
                     Traceloop.set_association_properties({
@@ -422,8 +445,8 @@ class SimpleAgent:
                     })
                 else:
                     # If no tool, this is an analysis or reasoning step
-                    step_result["status"] = "success"
-                    step_result["note"] = "No tool execution required for this step"
+                    step_result.status = "success"
+                    step_result.note = "No tool execution required for this step"
                     
                     # Track reasoning step
                     Traceloop.set_association_properties({
@@ -433,8 +456,8 @@ class SimpleAgent:
                     
             except Exception as e:
                 logger.error(f"Error executing step {step_num}: {str(e)}", exc_info=True)
-                step_result["status"] = "error"
-                step_result["error"] = str(e)
+                step_result.status = "error"
+                step_result.error = str(e)
                 
                 # Track step execution error
                 Traceloop.set_association_properties({
@@ -450,18 +473,18 @@ class SimpleAgent:
             # Track progress through plan
             Traceloop.set_association_properties({
                 "steps_completed": step_num,
-                "steps_remaining": len(steps) - step_num
+                "steps_remaining": len(plan.steps) - step_num
             })
             
         # Track plan execution completion
-        success_count = sum(1 for r in results if r.get("status") == "success")
-        error_count = sum(1 for r in results if r.get("status") == "error")
+        success_count = sum(1 for r in results if r.status == "success")
+        error_count = sum(1 for r in results if r.status == "error")
         
         Traceloop.set_association_properties({
             "execution_stage": "completed",
             "successful_steps": success_count,
             "error_steps": error_count,
-            "success_rate": success_count / len(steps) if len(steps) > 0 else 0
+            "success_rate": success_count / len(results) if len(results) > 0 else 0
         })
         
         return results
@@ -470,8 +493,8 @@ class SimpleAgent:
     async def _generate_recommendations(
         self,
         task: str,
-        plan: Dict[str, Any],
-        results: List[Dict[str, Any]]
+        plan: Plan,
+        results: List[StepResult]
     ) -> str:
         """
         Generate recommendations based on execution results
@@ -504,7 +527,7 @@ class SimpleAgent:
         Original task: {task}
         
         Your plan:
-        {json.dumps(plan, indent=2)}
+        {plan.model_dump_json(indent=2)}
         
         Execution results:
         {formatted_results}
@@ -558,7 +581,7 @@ class SimpleAgent:
         return recommendation_text
     
     @tool(name="format_results")
-    def _format_execution_results(self, results: List[Dict[str, Any]]) -> str:
+    def _format_execution_results(self, results: List[StepResult]) -> str:
         """
         Format execution results as text
         
@@ -577,24 +600,24 @@ class SimpleAgent:
         formatted_results = []
         
         for result in results:
-            step = result.get("step", "?")
-            description = result.get("description", "Unknown step")
-            status = result.get("status", "unknown")
+            step = result.step
+            description = result.description
+            status = result.status
             
             step_text = f"Step {step}: {description} - {status}"
             
-            if status == "error":
-                step_text += f"\nError: {result.get('error', 'Unknown error')}"
+            if status == "error" and result.error:
+                step_text += f"\nError: {result.error}"
             
-            if "tool_result" in result:
-                tool_result = result["tool_result"]
+            if result.tool_result:
+                tool_result = result.tool_result
                 # Truncate long results
                 if len(tool_result) > 1000:
                     tool_result = tool_result[:997] + "..."
                 step_text += f"\nResult: {tool_result}"
             
-            if "note" in result:
-                step_text += f"\nNote: {result['note']}"
+            if result.note:
+                step_text += f"\nNote: {result.note}"
             
             formatted_results.append(step_text)
         

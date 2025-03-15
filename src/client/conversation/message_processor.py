@@ -3,7 +3,8 @@ Message Processor module for handling conversation flow and message management.
 """
 
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
+from pydantic import BaseModel, Field
 
 from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
@@ -11,6 +12,25 @@ from traceloop.sdk import Traceloop
 from src.client.llm_service import LLMService
 
 logger = logging.getLogger("MessageProcessor")
+
+# Define Pydantic models for message structures
+class ToolFunction(BaseModel):
+    """Model for tool function details"""
+    name: str = Field(..., description="Name of the function")
+    arguments: str = Field(..., description="Arguments for the function in JSON format")
+
+class ToolCall(BaseModel):
+    """Model for tool call details"""
+    id: str = Field(..., description="Unique identifier for the tool call")
+    type: str = Field("function", description="Type of tool call")
+    function: ToolFunction = Field(..., description="Function details")
+
+class Message(BaseModel):
+    """Model for conversation message"""
+    role: str = Field(..., description="Role of the message sender (user, assistant, system, tool)")
+    content: Optional[str] = Field(None, description="Content of the message")
+    tool_calls: Optional[List[ToolCall]] = Field(None, description="Tool calls in the message")
+    tool_call_id: Optional[str] = Field(None, description="ID of the tool call this message responds to")
 
 class MessageProcessor:
     """Manages conversation flow and message processing"""
@@ -92,30 +112,38 @@ class MessageProcessor:
             tool_args = getattr(tool_call, 'arguments', '{}')
             tool_id = getattr(tool_call, 'id', 'unknown_id')
             
-        # Add assistant message with tool call
-        tool_call_message = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": tool_id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": tool_args
-                    }
-                }
-            ]
-        }
-        messages.append(tool_call_message)
+        # Create tool function model
+        tool_function = ToolFunction(
+            name=tool_name,
+            arguments=tool_args
+        )
         
-        # Add tool response message
-        tool_response_message = {
-            "role": "tool", 
-            "tool_call_id": tool_id,
-            "content": result_text
-        }
-        messages.append(tool_response_message)
+        # Create tool call model
+        tool_call_model = ToolCall(
+            id=tool_id,
+            type="function",
+            function=tool_function
+        )
+        
+        # Create assistant message with tool call
+        tool_call_message = Message(
+            role="assistant",
+            content=None,
+            tool_calls=[tool_call_model]
+        )
+        
+        # Add assistant message with tool call to history
+        messages.append(tool_call_message.model_dump())
+        
+        # Create tool response message
+        tool_response_message = Message(
+            role="tool", 
+            tool_call_id=tool_id,
+            content=result_text
+        )
+        
+        # Add tool response message to history
+        messages.append(tool_response_message.model_dump())
         
         # Log updated message history for debugging
         logger.debug(f"Updated message history with tool call and result. Now have {len(messages)} messages.")
