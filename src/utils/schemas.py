@@ -5,7 +5,7 @@ This module provides standardized Pydantic models for data validation,
 serialization, and documentation throughout the application.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 import uuid
@@ -57,7 +57,7 @@ class ToolResult(BaseModel):
     error: Optional[str] = Field(None, description="Error message if execution failed")
     execution_time: float = Field(0.0, description="Time taken to execute the tool in seconds")
     
-    @validator('status')
+    @field_validator('status')
     def validate_status(cls, v):
         if v not in ['success', 'error', 'timeout']:
             raise ValueError(f"Status must be 'success', 'error', or 'timeout', got '{v}'")
@@ -71,7 +71,7 @@ class Message(BaseModel):
     tool_call_id: Optional[str] = Field(None, description="ID of the tool call this message responds to")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="When this message was created")
     
-    @validator('role')
+    @field_validator('role')
     def validate_role(cls, v):
         valid_roles = ['user', 'assistant', 'system', 'tool']
         if v not in valid_roles:
@@ -86,11 +86,12 @@ class Message(BaseModel):
         """Check if this message is a tool response"""
         return self.role == "tool" and bool(self.tool_call_id)
     
-    @validator('tool_calls', 'content', always=True)
-    def check_content_or_tool_calls(cls, v, values):
+    @field_validator('tool_calls', 'content', mode='after')
+    def check_content_or_tool_calls(cls, v, info):
         """Ensure message has either content or tool calls for assistant messages"""
+        values = info.data
         if 'role' in values and values['role'] == 'assistant':
-            if v is None and 'content' in values and values['content'] is None and 'tool_calls' in values and values['tool_calls'] is None:
+            if v is None and values.get('content') is None and values.get('tool_calls') is None:
                 raise ValueError("Assistant messages must have either content or tool calls")
         return v
     
@@ -134,7 +135,7 @@ class ServerInfo(BaseModel):
     connected_at: Optional[datetime] = Field(None, description="When the server was connected")
     status: str = Field("disconnected", description="Current status of the server connection")
     
-    @validator('status')
+    @field_validator('status')
     def validate_status(cls, v):
         valid_statuses = ['connected', 'disconnected', 'error', 'connecting']
         if v not in valid_statuses:
@@ -170,7 +171,7 @@ class LLMRequest(BaseModel):
     max_tokens: Optional[int] = Field(None, description="Max tokens to generate")
     tools: Optional[List[Dict[str, Any]]] = Field(None, description="Tools available to the LLM")
     
-    @validator('temperature')
+    @field_validator('temperature')
     def validate_temperature(cls, v):
         if not 0.0 <= v <= 1.0:
             raise ValueError("Temperature must be between 0.0 and 1.0")
@@ -225,19 +226,19 @@ class AgentConfig(BaseModel):
     retries: int = Field(3, description="Number of retries for LLM calls")
     timeout: float = Field(60.0, description="Timeout for LLM calls in seconds")
     
-    @validator('temperature')
+    @field_validator('temperature')
     def validate_temperature(cls, v):
         if not 0.0 <= v <= 1.0:
             raise ValueError("Temperature must be between 0.0 and 1.0")
         return v
     
-    @validator('retries')
+    @field_validator('retries')
     def validate_retries(cls, v):
         if v < 0:
             raise ValueError("Retries must be non-negative")
         return v
     
-    @validator('timeout')
+    @field_validator('timeout')
     def validate_timeout(cls, v):
         if v <= 0:
             raise ValueError("Timeout must be positive")

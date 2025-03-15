@@ -1,5 +1,5 @@
 """
-Server Manager module for handling MCP server connections.
+Server Registry module for managing MCP server connections.
 """
 
 import logging
@@ -14,8 +14,9 @@ from mcp.client.stdio import stdio_client
 from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
 
-from .server_config import ServerConfig
-from .server_instance import ServerInstance
+from src.utils.schemas import ServerInfo, ServerToolInfo
+from src.client.server_instance import ServerInstance
+from src.client.server_config import ServerConfig
 from src.utils.decorators import server_connection, resource_cleanup
 
 logger = logging.getLogger("ServerRegistry")
@@ -24,70 +25,131 @@ class ServerRegistry:
     """Manages connections to MCP servers"""
     
     def __init__(self):
-        """Initialize the server manager"""
+        """Initialize the server registry"""
         self.servers = {}  # Dictionary to store server connections
         self.exit_stack = AsyncExitStack()  # For shared/global resources
         self.config_manager = ServerConfig()
         logger.info("ServerRegistry initialized")
         
     def get_server(self, server_name: str) -> Optional[ServerInstance]:
-        """
-        Get a server connection by name
-        
-        Args:
-            server_name: Name of the server
-            
-        Returns:
-            Server connection or None if not found
-        """
+        """Get a server connection by name"""
         return self.servers.get(server_name)
         
     def collect_all_tools(self) -> List[Dict[str, Any]]:
-        """
-        Collect tools from all connected servers
-        
-        Returns:
-            List of all available tools in OpenAI format
-        """
+        """Collect tools from all connected servers"""
         all_tools = []
         for server in self.servers.values():
             all_tools.extend(server.get_openai_format_tools())
         
-        num_servers = len(self.servers)
-        num_tools = len(all_tools)
-        if num_servers > 0:
-            logger.info(f"Collected {num_tools} tools from {num_servers} servers")
-        else:
-            logger.info("No servers connected yet. Only server management tools will be available.")
-            
         return all_tools
+    
+    def collect_all_tools_as_models(self) -> List[ServerToolInfo]:
+        """Collect tools from all connected servers as Pydantic models"""
+        all_tools = []
+        try:
+            for server in self.servers.values():
+                all_tools.extend(server.get_tools_as_models())
+            return all_tools
+        except Exception as e:
+            logger.error(f"Error collecting tools as models: {e}")
+            return []
         
     def get_server_tools(self, server_name: str) -> List[Dict[str, Any]]:
-        """
-        Get tools from a specific server
-        
-        Args:
-            server_name: Name of the server
-            
-        Returns:
-            List of tools in OpenAI format
-        """
+        """Get tools from a specific server"""
         server = self.get_server(server_name)
         if server:
             return server.get_openai_format_tools()
         return []
     
+    def get_connected_servers(self) -> Dict[str, Dict[str, Any]]:
+        """Get information about connected servers"""
+        result = {}
+        for server_name, server in self.servers.items():
+            result[server_name] = {
+                "tools": server.get_openai_format_tools(),
+                "connected_at": server.connected_at.isoformat()
+            }
+        return result
+    
+    def get_connected_servers_as_models(self) -> List[ServerInfo]:
+        """Get information about connected servers as ServerInfo models"""
+        try:
+            return [server.get_server_info_as_model() for server in self.servers.values()]
+        except Exception as e:
+            logger.error(f"Error getting servers as models: {e}")
+            return []
+    
+    def get_primary_server(self) -> Optional[str]:
+        """Get the name of the primary server if any"""
+        # Use the first server as primary if available
+        if self.servers:
+            return next(iter(self.servers.keys()))
+        return None
+    
+    async def get_available_servers(self) -> Dict[str, Dict[str, Any]]:
+        """Get all available servers from configuration"""
+        try:
+            # Get server configurations
+            config = self.config_manager.load_config()
+            
+            # Format for response
+            available_servers = {}
+            for server_name, server_config in config.items():
+                is_connected = server_name in self.servers
+                available_servers[server_name] = {
+                    "connected": is_connected,
+                    "type": "configured",
+                    "source": "config",
+                    "command": server_config.get("command", "unknown")
+                }
+                
+            return available_servers
+        except Exception as e:
+            logger.error(f"Error getting available servers: {e}")
+            return {}
+    
+    async def get_available_configured_servers(self) -> List[str]:
+        """Get list of available configured servers"""
+        try:
+            # Get server configurations
+            config = self.config_manager.load_config()
+            return list(config.keys())
+        except Exception as e:
+            logger.error(f"Error getting configured servers: {e}")
+            return []
+    
+    async def get_available_servers_as_models(self) -> List[ServerInfo]:
+        """Get all available servers as ServerInfo models"""
+        try:
+            available_servers = []
+            
+            # Get server configurations
+            config = self.config_manager.load_config()
+            
+            # Convert to ServerInfo models
+            for server_name, _ in config.items():
+                is_connected = server_name in self.servers
+                
+                if is_connected:
+                    # Server is already connected, use its model
+                    available_servers.append(self.servers[server_name].get_server_info_as_model())
+                else:
+                    # Server is not connected
+                    available_servers.append(ServerInfo(
+                        name=server_name,
+                        connected=False,
+                        status="disconnected",
+                        tools=[]
+                    ))
+                
+            return available_servers
+        except Exception as e:
+            logger.error(f"Error getting available servers as models: {e}")
+            return []
+    
     @server_connection
     async def disconnect_server(self, server_name: str) -> Dict[str, Any]:
-        """
-        Disconnect a specific server
-        
-        Args:
-            server_name: Name of the server to disconnect
-            
-        Returns:
-            Dictionary with status information
-        """
+        """Disconnect a specific server"""
         logger.info(f"Disconnecting server: {server_name}")
         
         # Track the disconnection operation
@@ -97,7 +159,6 @@ class ServerRegistry:
         })
         
         if server_name not in self.servers:
-            logger.warning(f"Server '{server_name}' not found, cannot disconnect")
             return {
                 "status": "not_connected",
                 "server": server_name,
@@ -114,12 +175,6 @@ class ServerRegistry:
             # Remove from servers dictionary
             self.servers.pop(server_name)
             
-            # Track successful disconnection
-            Traceloop.set_association_properties({
-                "disconnect_operation": "success"
-            })
-            
-            logger.info(f"Successfully disconnected from server: {server_name}")
             return {
                 "status": "disconnected",
                 "server": server_name,
@@ -127,14 +182,7 @@ class ServerRegistry:
             }
         except Exception as e:
             error_msg = f"Error disconnecting from server '{server_name}': {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            
-            # Track disconnection error
-            Traceloop.set_association_properties({
-                "disconnect_operation": "error",
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            })
+            logger.error(error_msg)
             
             return {
                 "status": "error",
@@ -159,46 +207,20 @@ class ServerRegistry:
         # Clean up each server individually
         for server_name, server in list(self.servers.items()):
             try:
-                logger.info(f"Cleaning up server: {server_name}")
                 await server.cleanup()
-                logger.info(f"Successfully cleaned up server: {server_name}")
             except Exception as e:
-                error_msg = f"Error cleaning up server '{server_name}': {str(e)}"
-                logger.error(error_msg, exc_info=True)
                 errors.append((server_name, str(e)))
+                logger.error(f"Error cleaning up server '{server_name}': {e}")
         
         # Clear servers dictionary after all cleanup attempts
         self.servers.clear()
         
         # Clean up global resources with the main exit stack
         await self.exit_stack.aclose()
-        
-        # Track cleanup completion
-        Traceloop.set_association_properties({
-            "cleanup_complete": True,
-            "error_count": len(errors)
-        })
-        
-        # Log summary of cleanup
-        if errors:
-            logger.warning(f"Completed cleanup with {len(errors)} errors")
-        else:
-            logger.info("Successfully cleaned up all server connections")
     
     @server_connection
     async def connect_to_server(self, server_script_path: str) -> str:
-        """
-        Connect to an MCP server using a script path
-        
-        Args:
-            server_script_path: Path to the server script (.py or .js)
-            
-        Returns:
-            Name of the connected server
-            
-        Raises:
-            ValueError: If the script is invalid
-        """
+        """Connect to an MCP server using a script path"""
         logger.info(f"Connecting to server with script: {server_script_path}")
         
         # Validate script file extension and get command
@@ -220,18 +242,7 @@ class ServerRegistry:
 
     @server_connection
     async def connect_to_configured_server(self, server_name: str) -> Dict[str, Any]:
-        """
-        Connect to an MCP server defined in configuration
-        
-        Args:
-            server_name: Name of the server in the config file
-            
-        Returns:
-            Dictionary with connection status and details
-            
-        Raises:
-            ValueError: If the server configuration is invalid
-        """
+        """Connect to an MCP server defined in configuration"""
         logger.info(f"Connecting to configured server: {server_name}")
         
         # Check if already connected
@@ -263,7 +274,6 @@ class ServerRegistry:
             
             # Get tool names for response
             tool_names = server.get_tool_names()
-            logger.info(f"Connected to server {server_name} with tools: {tool_names}")
             
             return {
                 "status": "connected",
@@ -274,7 +284,7 @@ class ServerRegistry:
             
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"Failed to connect to configured server {server_name}: {error_msg}", exc_info=True)
+            logger.error(f"Failed to connect to configured server {server_name}: {error_msg}")
             
             return {
                 "status": "error",
@@ -284,15 +294,7 @@ class ServerRegistry:
 
     @task(name="create_server_session")
     async def _create_server_session(self, server_params: StdioServerParameters) -> ClientSession:
-        """
-        Create and initialize a server session
-        
-        Args:
-            server_params: Parameters for the server
-            
-        Returns:
-            Initialized client session
-        """
+        """Create and initialize a server session"""
         # Track the server session creation
         if hasattr(server_params, 'command') and hasattr(server_params, 'args'):
             Traceloop.set_association_properties({
@@ -307,19 +309,8 @@ class ServerRegistry:
         return session
         
     @task(name="create_script_server_params")
-    def _create_script_server_params(self, script_path: str) -> tuple[str, StdioServerParameters]:
-        """
-        Create server parameters for a script path
-        
-        Args:
-            script_path: Path to the server script
-            
-        Returns:
-            Tuple of (command, server_params)
-            
-        Raises:
-            ValueError: If the script has an invalid extension
-        """
+    def _create_script_server_params(self, script_path: str) -> tuple:
+        """Create server parameters for a script path"""
         # Validate script file extension
         is_python = script_path.endswith('.py')
         is_js = script_path.endswith('.js')
@@ -338,19 +329,7 @@ class ServerRegistry:
         
     @task(name="create_config_server_params")
     def _create_config_server_params(self, server_name: str, server_config: Dict[str, Any]) -> StdioServerParameters:
-        """
-        Create server parameters from configuration
-        
-        Args:
-            server_name: Name of the server
-            server_config: Server configuration dictionary
-            
-        Returns:
-            Server parameters
-            
-        Raises:
-            ValueError: If the configuration is invalid
-        """
+        """Create server parameters from configuration"""
         # Validate required fields
         if 'command' not in server_config:
             raise ValueError(f"Server '{server_name}' configuration missing 'command' field")
@@ -367,11 +346,6 @@ class ServerRegistry:
         
         # Process environment variables
         processed_env = self.config_manager.process_environment_variables(env)
-        
-        # Log API key status if this is the Brave Search server
-        if server_name == "brave-search" and 'BRAVE_API_KEY' in processed_env:
-            key_preview = processed_env['BRAVE_API_KEY'][:4] + "..." if processed_env['BRAVE_API_KEY'] else "None"
-            logger.info(f"[API KEY STATUS] Brave API key is set (starts with: {key_preview})")
         
         # Merge with current environment
         env = {**os.environ, **processed_env}
