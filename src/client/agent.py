@@ -15,7 +15,7 @@ from traceloop.sdk import Traceloop
 
 from src.utils.decorators import message_processing, server_connection, resource_cleanup
 from .server_registry import ServerRegistry
-from .conversation import Conversation
+from src.client.conversation import Conversation
 from .tool_processor import ToolExecutor
 from .llm_service import LLMService
 
