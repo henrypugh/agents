@@ -302,6 +302,3 @@ class MyCustomAgent:
 - Check the server logs for errors
 - Examine the Traceloop dashboard for detailed execution traces
 
-## 📄 License
-
-MIT
