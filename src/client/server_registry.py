@@ -9,8 +9,11 @@ import logging
 import os
 import shutil
 import time
-from typing import Dict, List, Optional, Any, Tuple, Set, cast
+import asyncio
+from typing import Dict, List, Optional, Any, Tuple, Set, cast, TypeVar, Type, Protocol
 from contextlib import AsyncExitStack
+from enum import Enum, auto
+from pydantic import TypeAdapter, ValidationError
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -21,13 +24,53 @@ from traceloop.sdk import Traceloop
 from src.utils.schemas import (
     ServerInfo,
     ServerToolInfo,
-    ServerStatus
+    ServerStatus,
+    ServerName
 )
 from src.client.server_instance import ServerInstance
 from src.client.server_config import ServerConfig
 from src.utils.decorators import server_connection, resource_cleanup
 
 logger = logging.getLogger(__name__)
+
+# Default connection settings
+DEFAULT_CONNECTION_TIMEOUT = 30.0
+DEFAULT_MAX_RETRIES = 2
+DEFAULT_RETRY_DELAY = 1.0
+
+class ConnectionSettings:
+    """Settings for server connections"""
+    def __init__(
+        self,
+        timeout: float = DEFAULT_CONNECTION_TIMEOUT,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_delay: float = DEFAULT_RETRY_DELAY
+    ):
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+
+class ServerRegistryConfig:
+    """Configuration for ServerRegistry"""
+    def __init__(
+        self,
+        connection_settings: Optional[ConnectionSettings] = None,
+        validate_servers: bool = True,
+        ignore_connection_errors: bool = False
+    ):
+        self.connection_settings = connection_settings or ConnectionSettings()
+        self.validate_servers = validate_servers
+        self.ignore_connection_errors = ignore_connection_errors
+
+
+class ServerConnectionError(Exception):
+    """Exception raised for server connection errors"""
+    def __init__(self, server_name: str, message: str):
+        self.server_name = server_name
+        self.message = message
+        super().__init__(f"Error connecting to server '{server_name}': {message}")
+
 
 class ServerRegistry:
     """
@@ -40,11 +83,22 @@ class ServerRegistry:
     - Resource cleanup
     """
     
-    def __init__(self):
-        """Initialize the server registry"""
+    def __init__(self, config: Optional[ServerRegistryConfig] = None):
+        """
+        Initialize the server registry
+        
+        Args:
+            config: Optional configuration for the registry
+        """
         self.servers: Dict[str, ServerInstance] = {}  # Dictionary to store server connections
         self.exit_stack = AsyncExitStack()  # For shared/global resources
         self.config_manager = ServerConfig()
+        self.config = config or ServerRegistryConfig()
+        
+        # Create type adapters for validation
+        self.server_info_validator = TypeAdapter(ServerInfo)
+        self.server_tool_info_validator = TypeAdapter(ServerToolInfo)
+        
         logger.info("ServerRegistry initialized")
         
     def get_server(self, server_name: str) -> Optional[ServerInstance]:
@@ -82,7 +136,19 @@ class ServerRegistry:
         all_tools = []
         try:
             for server in self.servers.values():
-                all_tools.extend(server.get_tools_as_models())
+                server_tools = server.get_tools_as_models()
+                
+                # Validate tools if configured
+                if self.config.validate_servers:
+                    for tool in server_tools:
+                        try:
+                            validated_tool = self.server_tool_info_validator.validate_python(tool)
+                            all_tools.append(validated_tool)
+                        except ValidationError as e:
+                            logger.warning(f"Invalid tool from server {server.server_name}: {e}")
+                else:
+                    all_tools.extend(server_tools)
+                    
             return all_tools
         except Exception as e:
             logger.error(f"Error collecting tools as models: {e}")
@@ -114,7 +180,8 @@ class ServerRegistry:
         for server_name, server in self.servers.items():
             result[server_name] = {
                 "tools": server.get_openai_format_tools(),
-                "connected_at": server.connected_at.isoformat()
+                "connected_at": server.connected_at.isoformat(),
+                "status": ServerStatus.CONNECTED
             }
         return result
     
@@ -126,7 +193,21 @@ class ServerRegistry:
             List of ServerInfo models
         """
         try:
-            return [server.get_server_info_as_model() for server in self.servers.values()]
+            server_infos = []
+            for server in self.servers.values():
+                server_info = server.get_server_info_as_model()
+                
+                # Validate if configured
+                if self.config.validate_servers:
+                    try:
+                        validated_info = self.server_info_validator.validate_python(server_info)
+                        server_infos.append(validated_info)
+                    except ValidationError as e:
+                        logger.warning(f"Invalid server info for {server.server_name}: {e}")
+                else:
+                    server_infos.append(server_info)
+                    
+            return server_infos
         except Exception as e:
             logger.error(f"Error getting servers as models: {e}")
             return []
@@ -162,7 +243,8 @@ class ServerRegistry:
                     "connected": is_connected,
                     "type": "configured",
                     "source": "config",
-                    "command": server_config.get("command", "unknown")
+                    "command": server_config.get("command", "unknown"),
+                    "status": ServerStatus.CONNECTED if is_connected else ServerStatus.DISCONNECTED
                 }
                 
             return available_servers
@@ -207,12 +289,23 @@ class ServerRegistry:
                     available_servers.append(self.servers[server_name].get_server_info_as_model())
                 else:
                     # Server is not connected
-                    available_servers.append(ServerInfo(
-                        name=server_name,
-                        connected=False,
-                        status=ServerStatus.DISCONNECTED,
-                        tools=[]
-                    ))
+                    try:
+                        server_info = ServerInfo(
+                            name=server_name,
+                            connected=False,
+                            status=ServerStatus.DISCONNECTED,
+                            tools=[]
+                        )
+                        
+                        # Validate if configured
+                        if self.config.validate_servers:
+                            validated_info = self.server_info_validator.validate_python(server_info)
+                            available_servers.append(validated_info)
+                        else:
+                            available_servers.append(server_info)
+                            
+                    except ValidationError as e:
+                        logger.warning(f"Invalid server info for {server_name}: {e}")
                 
             return available_servers
         except Exception as e:
@@ -264,6 +357,9 @@ class ServerRegistry:
             error_msg = f"Error disconnecting from server '{server_name}': {str(e)}"
             logger.error(error_msg)
             
+            # Remove from servers dictionary even if cleanup failed
+            self.servers.pop(server_name, None)
+            
             return {
                 "status": "error",
                 "server": server_name,
@@ -297,6 +393,10 @@ class ServerRegistry:
         
         # Clean up global resources with the main exit stack
         await self.exit_stack.aclose()
+        
+        # Log any errors that occurred
+        if errors:
+            logger.warning(f"Encountered {len(errors)} errors during cleanup: {errors}")
     
     @server_connection
     async def connect_to_server(self, server_script_path: str) -> str:
@@ -310,7 +410,7 @@ class ServerRegistry:
             Server name
             
         Raises:
-            ValueError: If script path is invalid
+            ServerConnectionError: If connection fails
         """
         logger.info(f"Connecting to server with script: {server_script_path}")
         
@@ -320,16 +420,45 @@ class ServerRegistry:
         # Generate server name from script path
         server_name = os.path.basename(server_script_path).split('.')[0]
         
-        # Connect and create server connection
-        session = await self._create_server_session(server_params)
-        server = ServerInstance(server_name, session)
-        await server.initialize()
+        # Apply connection retry logic
+        retries = 0
+        last_error = None
         
-        # Store server connection
-        self.servers[server_name] = server
+        while retries <= self.config.connection_settings.max_retries:
+            try:
+                # Connect and create server connection
+                session = await self._create_server_session(
+                    server_params, 
+                    timeout=self.config.connection_settings.timeout
+                )
+                server = ServerInstance(server_name, session)
+                await server.initialize()
+                
+                # Store server connection
+                self.servers[server_name] = server
+                
+                logger.info(f"Connected to server {server_name} with tools: {server.get_tool_names()}")
+                return server_name
+                
+            except Exception as e:
+                last_error = e
+                retries += 1
+                
+                if retries <= self.config.connection_settings.max_retries:
+                    logger.warning(f"Connection attempt {retries} failed for {server_name}: {e}")
+                    await asyncio.sleep(self.config.connection_settings.retry_delay * retries)
+                else:
+                    logger.error(f"Failed to connect to server {server_name} after {retries} attempts: {e}")
+                    break
+                    
+        # If we get here, all retries failed
+        error_message = f"Failed to connect after {retries} attempts: {last_error}"
         
-        logger.info(f"Connected to server {server_name} with tools: {server.get_tool_names()}")
-        return server_name
+        if self.config.ignore_connection_errors:
+            logger.error(error_message)
+            return f"error:{server_name}"
+        else:
+            raise ServerConnectionError(server_name, error_message)
 
     @server_connection
     async def connect_to_configured_server(self, server_name: str) -> Dict[str, Any]:
@@ -343,7 +472,7 @@ class ServerRegistry:
             Status dictionary
             
         Raises:
-            ValueError: If server configuration is invalid
+            ServerConnectionError: If connection fails and ignore_errors is False
         """
         logger.info(f"Connecting to configured server: {server_name}")
         
@@ -359,59 +488,90 @@ class ServerRegistry:
                 "tool_count": len(tools)
             }
         
-        try:
-            # Get server configuration
-            server_config = self.config_manager.get_server_config(server_name)
-            
-            # Create server parameters
-            server_params = self._create_config_server_params(server_name, server_config)
-            
-            # Connect and create server connection
-            connection_start = time.time()
-            session = await self._create_server_session(server_params)
-            server = ServerInstance(server_name, session)
-            await server.initialize()
-            connection_time = time.time() - connection_start
-            
-            # Store server connection
-            self.servers[server_name] = server
-            
-            # Get tool names for response
-            tool_names = server.get_tool_names()
-            
-            # Track connection metrics
-            Traceloop.set_association_properties({
-                "connection_time": connection_time,
-                "tool_count": len(tool_names)
-            })
-            
-            return {
-                "status": "connected",
-                "server": server_name,
-                "tools": tool_names,
-                "tool_count": len(tool_names)
-            }
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Failed to connect to configured server {server_name}: {error_msg}")
-            
+        # Apply connection retry logic
+        retries = 0
+        last_error = None
+        
+        while retries <= self.config.connection_settings.max_retries:
+            try:
+                # Get server configuration
+                server_config = self.config_manager.get_server_config(server_name)
+                
+                # Create server parameters
+                server_params = self._create_config_server_params(server_name, server_config)
+                
+                # Connect and create server connection
+                connection_start = time.time()
+                session = await self._create_server_session(
+                    server_params,
+                    timeout=self.config.connection_settings.timeout
+                )
+                server = ServerInstance(server_name, session)
+                await server.initialize()
+                connection_time = time.time() - connection_start
+                
+                # Store server connection
+                self.servers[server_name] = server
+                
+                # Get tool names for response
+                tool_names = server.get_tool_names()
+                
+                # Track connection metrics
+                Traceloop.set_association_properties({
+                    "connection_time": connection_time,
+                    "tool_count": len(tool_names)
+                })
+                
+                return {
+                    "status": "connected",
+                    "server": server_name,
+                    "tools": tool_names,
+                    "tool_count": len(tool_names)
+                }
+                
+            except Exception as e:
+                last_error = e
+                retries += 1
+                
+                if retries <= self.config.connection_settings.max_retries:
+                    logger.warning(f"Connection attempt {retries} failed for {server_name}: {e}")
+                    await asyncio.sleep(self.config.connection_settings.retry_delay * retries)
+                else:
+                    logger.error(f"Failed to connect to server {server_name} after {retries} attempts: {e}")
+                    break
+                    
+        # If we get here, all retries failed
+        error_message = f"Failed to connect after {retries} attempts: {last_error}"
+        
+        if self.config.ignore_connection_errors:
+            logger.error(error_message)
             return {
                 "status": "error",
                 "server": server_name,
-                "error": error_msg
+                "error": error_message
             }
+        else:
+            raise ServerConnectionError(server_name, error_message)
 
     @task(name="create_server_session")
-    async def _create_server_session(self, server_params: StdioServerParameters) -> ClientSession:
+    async def _create_server_session(
+        self, 
+        server_params: StdioServerParameters,
+        timeout: float = DEFAULT_CONNECTION_TIMEOUT
+    ) -> ClientSession:
         """
         Create and initialize a server session
         
         Args:
             server_params: Server parameters
+            timeout: Connection timeout in seconds
             
         Returns:
             Initialized client session
+            
+        Raises:
+            TimeoutError: If connection times out
+            Exception: Other connection errors
         """
         # Track the server session creation
         if hasattr(server_params, 'command') and hasattr(server_params, 'args'):
@@ -420,11 +580,28 @@ class ServerRegistry:
                 "args": " ".join(server_params.args) if server_params.args else ""
             })
         
-        stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
-        read, write = stdio_transport
-        session = await self.exit_stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        return session
+        try:
+            # Connect with timeout
+            stdio_transport = await asyncio.wait_for(
+                self.exit_stack.enter_async_context(stdio_client(server_params)),
+                timeout=timeout
+            )
+            
+            read, write = stdio_transport
+            session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+            
+            # Initialize with timeout
+            await asyncio.wait_for(
+                session.initialize(),
+                timeout=timeout
+            )
+            
+            return session
+            
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Connection timed out after {timeout} seconds")
+        except Exception as e:
+            raise Exception(f"Failed to create server session: {e}")
         
     @task(name="create_script_server_params")
     def _create_script_server_params(self, script_path: str) -> Tuple[str, StdioServerParameters]:
@@ -440,6 +617,10 @@ class ServerRegistry:
         Raises:
             ValueError: If script path is invalid
         """
+        # Validate script path exists
+        if not os.path.exists(script_path):
+            raise ValueError(f"Server script not found: {script_path}")
+            
         # Validate script file extension
         is_python = script_path.endswith('.py')
         is_js = script_path.endswith('.js')

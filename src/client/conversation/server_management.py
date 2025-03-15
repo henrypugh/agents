@@ -7,8 +7,10 @@ including server discovery, connection, and tool access.
 
 import logging
 import json
-from typing import Dict, List, Any, Optional, Protocol, Callable, Awaitable
-from enum import Enum
+import time
+from typing import Dict, List, Any, Optional, Protocol, Callable, Awaitable, Set, TypeVar, Union
+from enum import Enum, auto
+from pydantic import TypeAdapter, ValidationError
 
 from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
@@ -22,7 +24,9 @@ from src.utils.schemas import (
     ServerListResponse,
     ConnectResponse,
     MessageRole,
-    ConnectResponseStatus
+    ConnectResponseStatus,
+    OpenAIAdapter,
+    MessageHistory
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +41,21 @@ class ResponseProcessorProtocol(Protocol):
     ) -> None:
         ...
 
+class ServerManagementConfig:
+    """Configuration for server management"""
+    def __init__(
+        self,
+        trace_operations: bool = True,
+        secure_mode: bool = False,
+        validate_responses: bool = True,
+        max_connect_attempts: int = 2
+    ):
+        self.trace_operations = trace_operations
+        self.secure_mode = secure_mode  # If True, restricts some server operations
+        self.validate_responses = validate_responses
+        self.max_connect_attempts = max_connect_attempts
+
+
 class ServerManagementHandler:
     """
     Handles server management operations with Pydantic validation.
@@ -50,7 +69,8 @@ class ServerManagementHandler:
     def __init__(
         self,
         server_manager: ServerRegistry,
-        tool_processor: ToolExecutor
+        tool_processor: ToolExecutor,
+        config: Optional[ServerManagementConfig] = None
     ):
         """
         Initialize the server management handler
@@ -58,9 +78,16 @@ class ServerManagementHandler:
         Args:
             server_manager: Server manager instance
             tool_processor: Tool processor instance
+            config: Optional configuration
         """
         self.server_manager = server_manager
         self.tool_processor = tool_processor
+        self.config = config or ServerManagementConfig()
+        
+        # Create type adapters for validation
+        self.server_list_validator = TypeAdapter(ServerListResponse)
+        self.connect_response_validator = TypeAdapter(ConnectResponse)
+        
         logger.info("ServerManagementHandler initialized")
     
     def create_server_management_tools(self) -> List[Dict[str, Any]]:
@@ -70,7 +97,8 @@ class ServerManagementHandler:
         Returns:
             List of server management tools in OpenAI format
         """
-        return [
+        # Base tools always available
+        tools = [
             {
                 "type": "function",
                 "function": {
@@ -80,26 +108,6 @@ class ServerManagementHandler:
                         "type": "object",
                         "properties": {},
                         "required": []
-                    },
-                    "metadata": {
-                        "internal": True
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "connect_to_server",
-                    "description": "Connect to an MCP server to access its tools",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "server_name": {
-                                "type": "string",
-                                "description": "Name of the server to connect to"
-                            }
-                        },
-                        "required": ["server_name"]
                     },
                     "metadata": {
                         "internal": True
@@ -122,6 +130,31 @@ class ServerManagementHandler:
                 }
             }
         ]
+        
+        # Add connect tool unless secure mode is enabled
+        if not self.config.secure_mode:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "connect_to_server",
+                    "description": "Connect to an MCP server to access its tools",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "server_name": {
+                                "type": "string",
+                                "description": "Name of the server to connect to"
+                            }
+                        },
+                        "required": ["server_name"]
+                    },
+                    "metadata": {
+                        "internal": True
+                    }
+                }
+            })
+            
+        return tools
     
     @task(name="handle_server_management_tool")
     async def handle_server_management_tool(
@@ -144,37 +177,61 @@ class ServerManagementHandler:
         """
         logger.info(f"Handling server management tool: {tool_call.tool_name}")
         
+        # Track the operation start time
+        operation_start = time.time()
+        
         # Track the management tool being used
-        Traceloop.set_association_properties({
-            "management_tool": tool_call.tool_name
-        })
+        if self.config.trace_operations:
+            Traceloop.set_association_properties({
+                "management_tool": tool_call.tool_name,
+                "operation_start": operation_start
+            })
         
         try:
             # Handle each tool type
             if tool_call.tool_name == "list_available_servers":
                 await self._handle_list_available_servers(tool_call, messages, final_text)
             elif tool_call.tool_name == "connect_to_server":
-                await self._handle_connect_to_server(tool_call, messages, final_text, response_processor, tools)
+                if self.config.secure_mode:
+                    final_text.append(f"[Server management] Error: connect_to_server is disabled in secure mode")
+                    self._update_message_history(messages, tool_call, json.dumps({
+                        "status": "error",
+                        "error": "Server connections are restricted in secure mode"
+                    }))
+                else:
+                    await self._handle_connect_to_server(tool_call, messages, final_text, response_processor, tools)
             elif tool_call.tool_name == "list_connected_servers":
                 await self._handle_list_connected_servers(tool_call, messages, final_text)
             else:
                 final_text.append(f"Unknown server management tool: {tool_call.tool_name}")
                 
                 # Track the error
+                if self.config.trace_operations:
+                    Traceloop.set_association_properties({
+                        "error": "unknown_management_tool"
+                    })
+                    
+            # Track operation duration
+            if self.config.trace_operations:
+                operation_duration = time.time() - operation_start
                 Traceloop.set_association_properties({
-                    "error": "unknown_management_tool"
+                    "operation_duration": operation_duration,
+                    "operation_complete": True
                 })
-        
+                
         except Exception as e:
             logger.error(f"Error handling server management tool: {str(e)}", exc_info=True)
             final_text.append(f"Error: {str(e)}")
             
             # Track the error
-            Traceloop.set_association_properties({
-                "error": "management_tool_execution",
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            })
+            if self.config.trace_operations:
+                operation_duration = time.time() - operation_start
+                Traceloop.set_association_properties({
+                    "error": "management_tool_execution",
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "operation_duration": operation_duration
+                })
 
     @task(name="list_available_servers")
     async def _handle_list_available_servers(
@@ -195,10 +252,11 @@ class ServerManagementHandler:
         available_servers = await self.server_manager.get_available_servers()
         
         # Track available servers
-        Traceloop.set_association_properties({
-            "available_server_count": len(available_servers),
-            "available_servers": ",".join(available_servers.keys())
-        })
+        if self.config.trace_operations:
+            Traceloop.set_association_properties({
+                "available_server_count": len(available_servers),
+                "available_servers": ",".join(available_servers.keys())
+            })
         
         # Create response model
         server_info_dict = {}
@@ -231,6 +289,7 @@ class ServerManagementHandler:
         else:
             result_text = "No available servers found"
         
+        # Add to final text with consistent formatting
         final_text.append(f"[Server management] {result_text}")
         
         # Update message history
@@ -267,17 +326,19 @@ class ServerManagementHandler:
             self._update_message_history(messages, tool_call, error_response.model_dump_json())
             
             # Track the error
-            Traceloop.set_association_properties({
-                "error": "missing_server_name"
-            })
+            if self.config.trace_operations:
+                Traceloop.set_association_properties({
+                    "error": "missing_server_name"
+                })
             return
             
         server_name = tool_call.arguments["server_name"]
         
         # Track the server being connected to
-        Traceloop.set_association_properties({
-            "target_server": server_name
-        })
+        if self.config.trace_operations:
+            Traceloop.set_association_properties({
+                "target_server": server_name
+            })
         
         # Get available servers
         available_servers = await self.server_manager.get_available_servers()
@@ -293,64 +354,81 @@ class ServerManagementHandler:
             self._update_message_history(messages, tool_call, error_response.model_dump_json())
             
             # Track the error
-            Traceloop.set_association_properties({
-                "error": "server_not_found",
-                "available_servers": ",".join(available_servers.keys())
-            })
+            if self.config.trace_operations:
+                Traceloop.set_association_properties({
+                    "error": "server_not_found",
+                    "available_servers": ",".join(available_servers.keys())
+                })
             return
         
-        # Connect to the server
-        try:
-            connection_result = await self.server_manager.connect_to_configured_server(server_name)
-            
-            if connection_result.get("status") == "already_connected":
-                response = ConnectResponse(
-                    status=ConnectResponseStatus.ALREADY_CONNECTED,
-                    server=server_name,
-                    tools=connection_result.get("tools", []),
-                    tool_count=connection_result.get("tool_count", 0)
-                )
-                result_text = f"Server {server_name} is already connected"
-            else:
-                response = ConnectResponse(
-                    status=ConnectResponseStatus.CONNECTED,
-                    server=server_name,
-                    tools=connection_result.get("tools", []),
-                    tool_count=connection_result.get("tool_count", 0)
-                )
-                result_text = f"Successfully connected to server: {server_name}"
+        # Connect to the server with retry
+        for attempt in range(self.config.max_connect_attempts):
+            try:
+                # Track attempt
+                if self.config.trace_operations and attempt > 0:
+                    Traceloop.set_association_properties({
+                        "connect_attempt": attempt + 1
+                    })
+                    
+                connection_result = await self.server_manager.connect_to_configured_server(server_name)
                 
-            final_text.append(f"[Server management] {result_text}")
-            
-            # Track successful connection
-            Traceloop.set_association_properties({
-                "connection_status": "success",
-                "tool_count": response.tool_count or 0
-            })
-            
-            # Update message history
-            self._update_message_history(messages, tool_call, response.model_dump_json())
-            
-            # Get follow-up response with updated tools
-            updated_tools = self.server_manager.collect_all_tools() + self.create_server_management_tools()
-            await response_processor.get_follow_up_response(messages, updated_tools, final_text)
-            
-        except Exception as e:
-            error_response = ConnectResponse(
-                status=ConnectResponseStatus.ERROR,
-                server=server_name,
-                error=f"Failed to connect to server: {str(e)}"
-            )
-            
-            final_text.append(f"[Server management] Error: {error_response.error}")
-            self._update_message_history(messages, tool_call, error_response.model_dump_json())
-            
-            # Track the error
-            Traceloop.set_association_properties({
-                "connection_status": "error",
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            })
+                if connection_result.get("status") == "already_connected":
+                    response = ConnectResponse(
+                        status=ConnectResponseStatus.ALREADY_CONNECTED,
+                        server=server_name,
+                        tools=connection_result.get("tools", []),
+                        tool_count=connection_result.get("tool_count", 0)
+                    )
+                    result_text = f"Server {server_name} is already connected"
+                else:
+                    response = ConnectResponse(
+                        status=ConnectResponseStatus.CONNECTED,
+                        server=server_name,
+                        tools=connection_result.get("tools", []),
+                        tool_count=connection_result.get("tool_count", 0)
+                    )
+                    result_text = f"Successfully connected to server: {server_name}"
+                    
+                final_text.append(f"[Server management] {result_text}")
+                
+                # Track successful connection
+                if self.config.trace_operations:
+                    Traceloop.set_association_properties({
+                        "connection_status": "success",
+                        "tool_count": response.tool_count or 0
+                    })
+                
+                # Update message history
+                self._update_message_history(messages, tool_call, response.model_dump_json())
+                
+                # Get follow-up response with updated tools
+                updated_tools = self.server_manager.collect_all_tools() + self.create_server_management_tools()
+                await response_processor.get_follow_up_response(messages, updated_tools, final_text)
+                
+                # Successful connection, exit retry loop
+                break
+                
+            except Exception as e:
+                logger.error(f"Error connecting to server (attempt {attempt+1}): {e}")
+                
+                # Track error
+                if self.config.trace_operations:
+                    Traceloop.set_association_properties({
+                        "connect_attempt": attempt + 1,
+                        "connection_error": str(e),
+                        "error_type": type(e).__name__
+                    })
+                
+                # Last attempt - report error
+                if attempt == self.config.max_connect_attempts - 1:
+                    error_response = ConnectResponse(
+                        status=ConnectResponseStatus.ERROR,
+                        server=server_name,
+                        error=f"Failed to connect to server: {str(e)}"
+                    )
+                    
+                    final_text.append(f"[Server management] Error: {error_response.error}")
+                    self._update_message_history(messages, tool_call, error_response.model_dump_json())
 
     @task(name="list_connected_servers")
     async def _handle_list_connected_servers(
@@ -370,10 +448,11 @@ class ServerManagementHandler:
         connected_servers = self.server_manager.get_connected_servers()
         
         # Track connected servers
-        Traceloop.set_association_properties({
-            "connected_server_count": len(connected_servers),
-            "connected_servers": ",".join(connected_servers.keys())
-        })
+        if self.config.trace_operations:
+            Traceloop.set_association_properties({
+                "connected_server_count": len(connected_servers),
+                "connected_servers": ",".join(connected_servers.keys())
+            })
          
         # Format for JSON response
         result = {
@@ -417,40 +496,14 @@ class ServerManagementHandler:
             tool_call: Tool call model
             result_text: Result of tool execution
         """
-        try:
-            # Create assistant message with tool call
-            assistant_message = Message.assistant(tool_calls=[tool_call])
-            
-            # Create tool response message
-            tool_message = Message.tool(tool_call_id=tool_call.id, content=result_text)
-            
-            # Add messages to history
-            messages.append(assistant_message)
-            messages.append(tool_message)
-            
-        except Exception as e:
-            logger.error(f"Error updating message history: {e}")
-            # Fall back to creating dictionaries directly
-            tool_call_message = {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.tool_name,
-                            "arguments": json.dumps(tool_call.arguments)
-                        }
-                    }
-                ]
-            }
-            
-            tool_response_message = {
-                "role": "tool", 
-                "tool_call_id": tool_call.id,
-                "content": result_text
-            }
-            
-            messages.append(tool_call_message)
-            messages.append(tool_response_message)
+        MessageHistory.add_tool_interaction(messages, tool_call, result_text)
+        
+    def set_secure_mode(self, enable: bool) -> None:
+        """
+        Enable or disable secure mode
+        
+        Args:
+            enable: Whether to enable secure mode
+        """
+        self.config.secure_mode = enable
+        logger.info(f"Secure mode {'enabled' if enable else 'disabled'}")

@@ -5,31 +5,23 @@ This module provides standardized Pydantic models for data validation,
 serialization, and documentation throughout the application.
 """
 
-from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
-from typing import Optional, List, Dict, Any, Union, Literal, TypeVar, Type, Generic, cast
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict, computed_field
+from typing import Optional, List, Dict, Any, Union, Literal, TypeVar, Type, Generic, Annotated, Protocol, cast
 from enum import Enum, auto
 from datetime import datetime
 import uuid
 import json
 import logging
+from typing_extensions import TypedDict
 
 logger = logging.getLogger(__name__)
 
 # Generic type for model return values
 T = TypeVar('T', bound=BaseModel)
 
-class ModelConversionMixin:
-    """Mixin providing common conversion methods for models"""
-    
-    @classmethod
-    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        """Create a model instance from a dictionary with error handling"""
-        try:
-            return cls.model_validate(data)
-        except Exception as e:
-            logger.error(f"Error creating {cls.__name__} from dict: {e}")
-            # Re-raise to allow caller to handle
-            raise
+
+class BaseModelWithGetMethod(BaseModel):
+    """Base model with a get method for backward compatibility"""
     
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -43,18 +35,9 @@ class ModelConversionMixin:
             Attribute value or default
         """
         return getattr(self, key, default)
-        
-    def to_dict(self) -> Dict[str, Any]:
-        """
-        Convert model to dictionary
-        
-        Returns:
-            Dictionary representation of the model
-        """
-        return self.model_dump()
 
 
-class ToolArguments(BaseModel, ModelConversionMixin):
+class ToolArguments(BaseModelWithGetMethod):
     """Model for tool arguments"""
     args: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
     
@@ -64,7 +47,7 @@ class ToolArguments(BaseModel, ModelConversionMixin):
     )
 
 
-class ToolCall(BaseModel, ModelConversionMixin):
+class ToolCall(BaseModelWithGetMethod):
     """Model for LLM-generated tool calls"""
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8], description="Unique ID for the tool call")
     tool_name: str = Field(..., description="Name of the tool to call")
@@ -188,7 +171,7 @@ class ToolResultStatus(str, Enum):
     TIMEOUT = "timeout"
 
 
-class ToolResult(BaseModel, ModelConversionMixin):
+class ToolResult(BaseModelWithGetMethod):
     """Model for tool execution results"""
     tool_id: str = Field(..., description="ID of the tool call this result responds to")
     status: ToolResultStatus = Field(..., description="Status of the tool execution (success, error, timeout)")
@@ -256,7 +239,7 @@ class MessageRole(str, Enum):
     TOOL = "tool"
 
 
-class Message(BaseModel, ModelConversionMixin):
+class Message(BaseModelWithGetMethod):
     """Model for conversation messages"""
     role: MessageRole = Field(..., description="Role of the message sender (user, assistant, system, tool)")
     content: Optional[str] = Field(None, description="Content of the message")
@@ -287,10 +270,14 @@ class Message(BaseModel, ModelConversionMixin):
             
         return self
     
+    @computed_field
+    @property
     def is_tool_call(self) -> bool:
         """Check if this message contains tool calls"""
         return bool(self.tool_calls and len(self.tool_calls) > 0)
     
+    @computed_field
+    @property
     def is_tool_response(self) -> bool:
         """Check if this message is a tool response"""
         return self.role == MessageRole.TOOL and bool(self.tool_call_id)
@@ -356,7 +343,17 @@ class ServerStatus(str, Enum):
     CONNECTING = "connecting"
 
 
-class ServerInfo(BaseModel, ModelConversionMixin):
+# Reusable annotated type for server name validation
+def normalize_server_name(name: str) -> str:
+    """Normalize server name by removing invalid characters"""
+    # Only keep alphanumeric chars and hyphens
+    normalized = ''.join(c for c in name.lower() if c.isalnum() or c == '-')
+    return normalized or "unknown-server"
+
+ServerName = Annotated[str, Field(description="Normalized server name")]
+
+
+class ServerInfo(BaseModelWithGetMethod):
     """Model for server information"""
     name: str = Field(..., description="Name of the server")
     connected: bool = Field(False, description="Whether server is currently connected")
@@ -387,22 +384,16 @@ class ServerInfo(BaseModel, ModelConversionMixin):
         if self.connected and self.connected_at is None:
             raise ValueError("Connected servers must have a connected_at timestamp")
         return self
-        
-    def get(self, key: str, default: Any = None) -> Any:
-        """
-        Provide dictionary-like get method for backward compatibility
-        
-        Args:
-            key: Attribute name to get
-            default: Default value if attribute doesn't exist
-            
-        Returns:
-            Attribute value or default
-        """
-        return getattr(self, key, default)
 
 
-class ServerToolInfo(BaseModel, ModelConversionMixin):
+# Input schema for tools using TypedDict for better typing
+class ToolInputSchema(TypedDict, total=False):
+    type: str
+    properties: Dict[str, Any]
+    required: List[str]
+
+
+class ServerToolInfo(BaseModelWithGetMethod):
     """Information about a tool available on a server"""
     name: str = Field(..., description="Name of the tool")
     description: Optional[str] = Field(None, description="Description of the tool") 
@@ -428,7 +419,7 @@ class ServerToolInfo(BaseModel, ModelConversionMixin):
         }
 
 
-class LLMRequest(BaseModel, ModelConversionMixin):
+class LLMRequest(BaseModelWithGetMethod):
     """Model for LLM API requests"""
     messages: List[Message] = Field(..., description="Conversation messages")
     model: str = Field(..., description="LLM model to use")
@@ -472,53 +463,54 @@ class FinishReason(str, Enum):
     ERROR = "error"
 
 
-class MessageWrapper:
+class MessageWrapper(BaseModelWithGetMethod):
     """Wrapper to mimic OpenAI message structure"""
-    def __init__(self, content: Optional[str], tool_calls: Optional[List[ToolCall]]):
-        self.content = content
-        self.tool_calls = tool_calls
+    content: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True  # Allow ToolCall objects
+    )
 
-class ChoiceWrapper:
+
+class ChoiceWrapper(BaseModelWithGetMethod):
     """Wrapper to mimic OpenAI choice structure"""
-    def __init__(self, message: MessageWrapper, finish_reason: str):
-        self.message = message
-        self.finish_reason = finish_reason
+    message: MessageWrapper
+    finish_reason: str
+    
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True  # Allow MessageWrapper objects
+    )
 
 
-class LLMResponse(BaseModel, ModelConversionMixin):
+class LLMResponse(BaseModelWithGetMethod):
     """Model for LLM API responses"""
     content: Optional[str] = Field(None, description="Generated text content")
     tool_calls: Optional[List[ToolCall]] = Field(None, description="Tool calls generated by the LLM")
     finish_reason: FinishReason = Field(..., description="Reason why the generation finished")
+    _original_response: Optional[Any] = None  # Store original response for compatibility
     
     model_config = ConfigDict(
-        frozen=True  # Responses should be immutable
+        frozen=True,  # Responses should be immutable
+        arbitrary_types_allowed=True  # Allow storing original response
     )
     
-    def get(self, key: str, default: Any = None) -> Any:
-        """
-        Provide dictionary-like get method for backward compatibility
-        
-        Args:
-            key: Attribute name to get
-            default: Default value if attribute doesn't exist
-            
-        Returns:
-            Attribute value or default
-        """
-        return getattr(self, key, default)
-        
-    @property
-    def choices(self) -> List[ChoiceWrapper]:
+    @computed_field
+    def choices(self) -> List[Dict[str, Any]]:
         """
         Provide backward compatibility with OpenAI response format
         
         Returns:
-            List containing a single choice wrapper with message
+            List containing a single choice with message
         """
-        message = MessageWrapper(self.content, self.tool_calls)
-        choice = ChoiceWrapper(message, self.finish_reason)
-        return [choice]
+        # Return a simple dictionary format instead of wrapper objects
+        return [{
+            "message": {
+                "content": self.content,
+                "tool_calls": [tc.to_openai_format() for tc in self.tool_calls] if self.tool_calls else None
+            },
+            "finish_reason": self.finish_reason
+        }]
     
     @model_validator(mode='after')
     def validate_content_or_tool_calls(self) -> 'LLMResponse':
@@ -541,11 +533,15 @@ class LLMResponse(BaseModel, ModelConversionMixin):
                     for tc in message.tool_calls
                 ]
                 
-            return cls(
+            instance = cls(
                 content=message.content,
                 tool_calls=tool_calls,
                 finish_reason=choice.finish_reason
             )
+            # Store original response for compatibility
+            instance._original_response = response
+            return instance
+            
         except Exception as e:
             logger.error(f"Error converting OpenAI response to LLMResponse: {e}")
             # Create minimal valid response
@@ -559,7 +555,7 @@ class LLMResponse(BaseModel, ModelConversionMixin):
         return bool(self.tool_calls and len(self.tool_calls) > 0)
 
 
-class ServerListResponse(BaseModel, ModelConversionMixin):
+class ServerListResponse(BaseModelWithGetMethod):
     """Response model for list_available_servers tool"""
     available_servers: Dict[str, ServerInfo] = Field(default_factory=dict)
     count: int = Field(0, description="Number of available servers")
@@ -567,19 +563,6 @@ class ServerListResponse(BaseModel, ModelConversionMixin):
     model_config = ConfigDict(
         frozen=True  # Response should be immutable
     )
-    
-    def get(self, key: str, default: Any = None) -> Any:
-        """
-        Provide dictionary-like get method for backward compatibility
-        
-        Args:
-            key: Attribute name to get
-            default: Default value if attribute doesn't exist
-            
-        Returns:
-            Attribute value or default
-        """
-        return getattr(self, key, default)
 
 
 class ConnectResponseStatus(str, Enum):
@@ -589,7 +572,7 @@ class ConnectResponseStatus(str, Enum):
     ERROR = "error"
 
 
-class ConnectResponse(BaseModel, ModelConversionMixin):
+class ConnectResponse(BaseModelWithGetMethod):
     """Response model for connect_to_server tool"""
     status: ConnectResponseStatus = Field(..., description="Connection status")
     server: str = Field(..., description="Name of the server")
@@ -607,22 +590,9 @@ class ConnectResponse(BaseModel, ModelConversionMixin):
         if self.status == ConnectResponseStatus.ERROR and self.error is None:
             raise ValueError("Error message must be provided when status is 'error'")
         return self
-        
-    def get(self, key: str, default: Any = None) -> Any:
-        """
-        Provide dictionary-like get method for backward compatibility
-        
-        Args:
-            key: Attribute name to get
-            default: Default value if attribute doesn't exist
-            
-        Returns:
-            Attribute value or default
-        """
-        return getattr(self, key, default)
 
 
-class AgentConfig(BaseModel, ModelConversionMixin):
+class AgentConfig(BaseModelWithGetMethod):
     """Configuration for the Agent"""
     model: str = Field("google/gemini-2.0-flash-001", description="LLM model to use")
     temperature: float = Field(0.7, description="Temperature for generation")
@@ -654,3 +624,94 @@ class AgentConfig(BaseModel, ModelConversionMixin):
         if v <= 0:
             raise ValueError("Timeout must be positive")
         return v
+
+
+# Format adapters for centralized conversion logic
+class OpenAIAdapter:
+    """Centralized adapter for OpenAI format conversions"""
+    
+    @staticmethod
+    def message_to_openai(message: Message) -> Dict[str, Any]:
+        """Convert Message to OpenAI format"""
+        return message.to_openai_format()
+    
+    @staticmethod
+    def messages_to_openai(messages: List[Message]) -> List[Dict[str, Any]]:
+        """Convert list of Messages to OpenAI format"""
+        return [OpenAIAdapter.message_to_openai(msg) for msg in messages]
+    
+    @staticmethod
+    def tool_to_openai(tool_info: ServerToolInfo) -> Dict[str, Any]:
+        """Convert ServerToolInfo to OpenAI format"""
+        return tool_info.to_openai_format()
+    
+    @staticmethod
+    def request_to_openai(request: LLMRequest) -> Dict[str, Any]:
+        """Convert LLMRequest to OpenAI format"""
+        return request.to_openai_format()
+    
+    @staticmethod
+    def parse_openai_response(response: Any) -> LLMResponse:
+        """Parse OpenAI response to LLMResponse"""
+        return LLMResponse.from_openai_response(response)
+    
+    @staticmethod
+    def parse_openai_tool_calls(tool_calls_data: List[Dict[str, Any]]) -> List[ToolCall]:
+        """Parse OpenAI tool calls to ToolCall models"""
+        return [ToolCall.from_openai_format(tc) for tc in tool_calls_data]
+
+
+# Message history utilities
+class MessageHistory:
+    """Utilities for managing message history"""
+    
+    @staticmethod
+    def add_tool_interaction(messages: List[Message], tool_call: ToolCall, result: str) -> None:
+        """
+        Add tool interaction to message history
+        
+        Args:
+            messages: Conversation history
+            tool_call: Tool call model
+            result: Result of tool execution
+        """
+        try:
+            # Create assistant message with tool call
+            assistant_message = Message.assistant(tool_calls=[tool_call])
+            
+            # Create tool response message
+            tool_message = Message.tool(tool_call_id=tool_call.id, content=result)
+            
+            # Add messages to history
+            messages.append(assistant_message)
+            messages.append(tool_message)
+            
+        except Exception as e:
+            logger.error(f"Error updating message history: {e}")
+            # Fall back to dictionary-based message creation if needed
+            try:
+                tool_call_message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.tool_name,
+                                "arguments": json.dumps(tool_call.arguments)
+                            }
+                        }
+                    ]
+                }
+                
+                tool_response_message = {
+                    "role": "tool", 
+                    "tool_call_id": tool_call.id,
+                    "content": result
+                }
+                
+                messages.append(tool_call_message)
+                messages.append(tool_response_message)
+            except Exception as nested_error:
+                logger.error(f"Error in fallback message history update: {nested_error}")
