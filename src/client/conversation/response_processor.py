@@ -3,7 +3,6 @@ Response Processor module for handling LLM response parsing and processing.
 """
 
 import logging
-import json
 from typing import Dict, List, Any, Optional
 
 from traceloop.sdk.decorators import task
@@ -12,6 +11,7 @@ from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
 from src.client.llm_service import LLMService
 from src.client.tool_processor import ToolExecutor
+from src.utils.schemas import ToolCall, LLMResponse
 
 logger = logging.getLogger("ResponseProcessor")
 
@@ -66,14 +66,15 @@ class ResponseProcessor:
                 return
             
             # Check for text content first
+            content_added = False
             output_text = None
+            
             if hasattr(response, 'output_text') and response.output_text:
                 output_text = response.output_text
                 final_text.append(output_text)
                 content_added = True
             else:
                 # Manually extract text from output
-                content_added = False
                 for item in response.output:
                     if getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
                         for content_item in item.content:
@@ -85,16 +86,7 @@ class ResponseProcessor:
                                     output_text = text  # Save for later reference
             
             # Check for tool calls in the response
-            tool_calls = []
-            for item in response.output:
-                if getattr(item, 'type', '') == 'tool_calls':
-                    tool_calls.extend(item.tool_calls)
-                
-                # Alternative format to check
-                elif getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                    for content_item in item.content:
-                        if getattr(content_item, 'type', '') == 'tool_calls' and hasattr(content_item, 'tool_calls'):
-                            tool_calls.extend(content_item.tool_calls)
+            tool_calls = self._extract_tool_calls(response)
             
             # Track the type of response received
             has_tool_calls = bool(tool_calls)
@@ -120,6 +112,56 @@ class ResponseProcessor:
                 "error": str(e),
                 "error_type": type(e).__name__
             })
+    
+    @staticmethod
+    def _extract_tool_calls(response: Any) -> List[Any]:
+        """Extract tool calls from response object"""
+        tool_calls = []
+        for item in response.output:
+            if getattr(item, 'type', '') == 'tool_calls':
+                tool_calls.extend(item.tool_calls)
+            
+            # Alternative format to check
+            elif getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
+                for content_item in item.content:
+                    if getattr(content_item, 'type', '') == 'tool_calls' and hasattr(content_item, 'tool_calls'):
+                        tool_calls.extend(content_item.tool_calls)
+        return tool_calls
+    
+    @staticmethod
+    def extract_tool_calls_as_models(response: Any) -> List[ToolCall]:
+        """Extract tool calls as Pydantic models from response object"""
+        tool_calls = []
+        try:
+            for item in response.output:
+                if getattr(item, 'type', '') == 'tool_calls':
+                    for tc in item.tool_calls:
+                        try:
+                            tool_calls.append(ToolCall(
+                                id=getattr(tc, 'id', 'unknown_id'),
+                                tool_name=tc.function.name,
+                                arguments=tc.function.arguments
+                            ))
+                        except Exception as e:
+                            logger.warning(f"Failed to parse tool call: {e}")
+                
+                # Alternative format
+                elif getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
+                    for content_item in item.content:
+                        if getattr(content_item, 'type', '') == 'tool_calls' and hasattr(content_item, 'tool_calls'):
+                            for tc in content_item.tool_calls:
+                                try:
+                                    tool_calls.append(ToolCall(
+                                        id=getattr(tc, 'id', 'unknown_id'),
+                                        tool_name=tc.function.name,
+                                        arguments=tc.function.arguments
+                                    ))
+                                except Exception as e:
+                                    logger.warning(f"Failed to parse tool call: {e}")
+        except Exception as e:
+            logger.error(f"Error extracting tool calls as models: {e}")
+        
+        return tool_calls
     
     @task(name="process_tool_call")
     async def process_tool_call(
@@ -195,9 +237,6 @@ class ResponseProcessor:
         })
         
         try:
-            # Log message count for debugging
-            logger.debug(f"Sending {len(messages)} messages for follow-up")
-            
             # Using track_llm_call for the follow-up request
             with track_llm_call(vendor="openrouter", type="chat") as span:
                 # Report the request to Traceloop
@@ -208,7 +247,6 @@ class ResponseProcessor:
                             role=msg["role"],
                             content=msg["content"]
                         ))
-                    # Skip messages with no content or tool calls
                 
                 # Report the follow-up request
                 span.report_request(
@@ -220,19 +258,7 @@ class ResponseProcessor:
                 follow_up_response = await self.llm_client.get_completion(messages, available_tools)
                 
                 # Extract and report the text response for Traceloop
-                follow_up_text = ""
-                if hasattr(follow_up_response, 'output_text') and follow_up_response.output_text:
-                    follow_up_text = follow_up_response.output_text
-                else:
-                    # Try to extract text from the output structure
-                    for item in follow_up_response.output:
-                        if getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                            for content_item in item.content:
-                                if getattr(content_item, 'type', '') == 'output_text' and hasattr(content_item, 'text'):
-                                    follow_up_text = content_item.text
-                                    break
-                            if follow_up_text:
-                                break
+                follow_up_text = self._extract_text_from_response(follow_up_response)
                 
                 # Report the response to Traceloop
                 span.report_response(
@@ -241,47 +267,19 @@ class ResponseProcessor:
                 )
             
             # Check for text content in the response
-            output_text = None
-            if hasattr(follow_up_response, 'output_text') and follow_up_response.output_text:
-                output_text = follow_up_response.output_text.strip()
-                if output_text:
-                    logger.debug(f"Got follow-up content: {output_text[:100]}...")
-                    final_text.append(output_text)
-                    
-                    # Track successful follow-up with content
-                    Traceloop.set_association_properties({
-                        "follow_up_status": "success_with_content",
-                        "content_length": len(output_text)
-                    })
-            else:
-                # Try to manually extract text from the response
-                for item in follow_up_response.output:
-                    if getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                        for content_item in item.content:
-                            if getattr(content_item, 'type', '') == 'output_text' and hasattr(content_item, 'text'):
-                                text = content_item.text.strip()
-                                if text:
-                                    logger.debug(f"Got follow-up content: {text[:100]}...")
-                                    final_text.append(text)
-                                    
-                                    # Track successful follow-up with content
-                                    Traceloop.set_association_properties({
-                                        "follow_up_status": "success_with_content",
-                                        "content_length": len(text)
-                                    })
-                                    break
+            output_text = self._extract_text_from_response(follow_up_response)
+            if output_text:
+                logger.debug(f"Got follow-up content: {output_text[:100]}...")
+                final_text.append(output_text)
+                
+                # Track successful follow-up with content
+                Traceloop.set_association_properties({
+                    "follow_up_status": "success_with_content",
+                    "content_length": len(output_text)
+                })
             
             # Check for tool calls
-            tool_calls = []
-            for item in follow_up_response.output:
-                if getattr(item, 'type', '') == 'tool_calls':
-                    tool_calls.extend(item.tool_calls)
-                
-                # Alternative format to check
-                elif getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                    for content_item in item.content:
-                        if getattr(content_item, 'type', '') == 'tool_calls' and hasattr(content_item, 'tool_calls'):
-                            tool_calls.extend(content_item.tool_calls)
+            tool_calls = self._extract_tool_calls(follow_up_response)
             
             # Process tool calls if any
             if tool_calls:
@@ -308,3 +306,78 @@ class ResponseProcessor:
                 "error_type": type(e).__name__,
                 "error_message": str(e)
             })
+    
+    @staticmethod
+    def _extract_text_from_response(response: Any) -> Optional[str]:
+        """Extract text content from LLM response"""
+        if hasattr(response, 'output_text') and response.output_text:
+            return response.output_text.strip()
+        
+        # Try to manually extract text from the output structure
+        for item in response.output:
+            if getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
+                for content_item in item.content:
+                    if getattr(content_item, 'type', '') == 'output_text' and hasattr(content_item, 'text'):
+                        text = content_item.text.strip()
+                        if text:
+                            return text
+        
+        return None
+    
+    @staticmethod
+    def as_llm_response(response: Any) -> Optional[LLMResponse]:
+        """Convert raw response to LLMResponse model"""
+        try:
+            # Extract text content
+            content = None
+            if hasattr(response, 'output_text') and response.output_text:
+                content = response.output_text.strip()
+            else:
+                for item in response.output:
+                    if getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
+                        for content_item in item.content:
+                            if getattr(content_item, 'type', '') == 'output_text' and hasattr(content_item, 'text'):
+                                content = content_item.text.strip()
+                                break
+                        if content:
+                            break
+            
+            # Extract tool calls
+            tool_calls = []
+            for item in response.output:
+                if getattr(item, 'type', '') == 'tool_calls':
+                    for tc in item.tool_calls:
+                        try:
+                            tool_calls.append(ToolCall(
+                                id=getattr(tc, 'id', 'unknown_id'),
+                                tool_name=tc.function.name,
+                                arguments=tc.function.arguments
+                            ))
+                        except Exception:
+                            pass
+                elif getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
+                    for content_item in item.content:
+                        if getattr(content_item, 'type', '') == 'tool_calls' and hasattr(content_item, 'tool_calls'):
+                            for tc in content_item.tool_calls:
+                                try:
+                                    tool_calls.append(ToolCall(
+                                        id=getattr(tc, 'id', 'unknown_id'),
+                                        tool_name=tc.function.name,
+                                        arguments=tc.function.arguments
+                                    ))
+                                except Exception:
+                                    pass
+            
+            # Determine finish reason
+            finish_reason = "stop"
+            if tool_calls:
+                finish_reason = "tool_calls"
+            
+            return LLMResponse(
+                content=content,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason
+            )
+        except Exception as e:
+            logger.error(f"Error converting to LLMResponse: {e}")
+            return None

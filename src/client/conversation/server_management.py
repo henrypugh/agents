@@ -11,6 +11,7 @@ from traceloop.sdk import Traceloop
 
 from src.client.server_registry import ServerRegistry
 from src.client.tool_processor import ToolExecutor
+from src.utils.schemas import ToolCall, Message, ServerInfo
 
 logger = logging.getLogger("ServerManagement")
 
@@ -113,16 +114,7 @@ class ServerManagementHandler:
             response_processor: Response processor for follow-up handling
         """
         # Extract tool information from potentially different structures
-        if hasattr(tool_call, 'function'):
-            tool_name = tool_call.function.name
-            tool_args_raw = tool_call.function.arguments
-            tool_id = getattr(tool_call, 'id', 'unknown_id')
-        else:
-            # Alternative structure
-            tool_name = getattr(tool_call, 'name', 'unknown')
-            tool_args_raw = getattr(tool_call, 'arguments', '{}')
-            tool_id = getattr(tool_call, 'id', 'unknown_id')
-            
+        tool_name, tool_args_raw, tool_id = self._extract_tool_info(tool_call)
         logger.info(f"Handling server management tool: {tool_name}")
         
         # Track the management tool being used
@@ -171,6 +163,41 @@ class ServerManagementHandler:
                 "error_type": type(e).__name__,
                 "error_message": str(e)
             })
+    
+    @staticmethod
+    def _extract_tool_info(tool_call: Any) -> tuple:
+        """Extract tool name, arguments, and ID from tool call object"""
+        if hasattr(tool_call, 'function'):
+            tool_name = tool_call.function.name
+            tool_args = tool_call.function.arguments
+            tool_id = getattr(tool_call, 'id', 'unknown_id')
+        else:
+            # Alternative structure
+            tool_name = getattr(tool_call, 'name', 'unknown')
+            tool_args = getattr(tool_call, 'arguments', '{}')
+            tool_id = getattr(tool_call, 'id', 'unknown_id')
+        
+        return tool_name, tool_args, tool_id
+    
+    @staticmethod
+    def as_tool_call_model(tool_call: Any) -> Optional[ToolCall]:
+        """Convert raw tool call to ToolCall model"""
+        try:
+            if hasattr(tool_call, 'function'):
+                return ToolCall(
+                    id=getattr(tool_call, 'id', 'unknown_id'),
+                    tool_name=tool_call.function.name,
+                    arguments=tool_call.function.arguments
+                )
+            else:
+                return ToolCall(
+                    id=getattr(tool_call, 'id', 'unknown_id'),
+                    tool_name=getattr(tool_call, 'name', 'unknown'),
+                    arguments=getattr(tool_call, 'arguments', '{}')
+                )
+        except Exception as e:
+            logger.error(f"Error converting to ToolCall model: {e}")
+            return None
 
     @task(name="list_available_servers")
     async def _handle_list_available_servers(
@@ -180,11 +207,8 @@ class ServerManagementHandler:
         final_text: List[str]
     ) -> None:
         """Handle list_available_servers tool"""
-        # Extract tool ID from potentially different structures
-        if hasattr(tool_call, 'id'):
-            tool_id = tool_call.id
-        else:
-            tool_id = getattr(tool_call, 'id', 'unknown_id')
+        # Extract tool ID
+        _, _, tool_id = self._extract_tool_info(tool_call)
             
         available_servers = await self.server_manager.get_available_servers()
         
@@ -217,9 +241,27 @@ class ServerManagementHandler:
         
         final_text.append(f"[Server management] {result_text}")
         
-        # Update message history - use a helper method if we had one in message_processor
+        # Update message history
         self._update_message_history(messages, tool_call, json.dumps(result))
-
+    
+    async def list_available_servers_as_models(self) -> List[ServerInfo]:
+        """Get available servers as ServerInfo models"""
+        try:
+            server_models = []
+            available_servers = await self.server_manager.get_available_servers()
+            
+            for server_name, server_info in available_servers.items():
+                server_models.append(ServerInfo(
+                    name=server_name,
+                    connected=False,
+                    status="disconnected",
+                    tools=[]
+                ))
+            return server_models
+        except Exception as e:
+            logger.error(f"Error getting server models: {e}")
+            return []
+            
     @task(name="connect_to_server")
     async def _handle_connect_to_server(
         self,
@@ -345,6 +387,25 @@ class ServerManagementHandler:
         # Update message history
         self._update_message_history(messages, tool_call, json.dumps(result))
     
+    def get_connected_servers_as_models(self) -> List[ServerInfo]:
+        """Get connected servers as ServerInfo models"""
+        try:
+            server_models = []
+            connected_servers = self.server_manager.get_connected_servers()
+            
+            for server_name, server_info in connected_servers.items():
+                tool_names = [tool["function"]["name"] for tool in server_info.get("tools", [])]
+                server_models.append(ServerInfo(
+                    name=server_name,
+                    connected=True,
+                    status="connected",
+                    tools=tool_names
+                ))
+            return server_models
+        except Exception as e:
+            logger.error(f"Error getting connected server models: {e}")
+            return []
+    
     def _update_message_history(
         self,
         messages: List[Dict[str, Any]],
@@ -353,15 +414,7 @@ class ServerManagementHandler:
     ) -> None:
         """Helper method to update message history"""
         # Extract tool information
-        if hasattr(tool_call, 'function'):
-            tool_name = tool_call.function.name
-            tool_args = tool_call.function.arguments
-            tool_id = getattr(tool_call, 'id', 'unknown_id')
-        else:
-            # Alternative structure
-            tool_name = getattr(tool_call, 'name', 'unknown')
-            tool_args = getattr(tool_call, 'arguments', '{}')
-            tool_id = getattr(tool_call, 'id', 'unknown_id')
+        tool_name, tool_args, tool_id = self._extract_tool_info(tool_call)
             
         # Add assistant message with tool call
         tool_call_message = {
@@ -387,3 +440,41 @@ class ServerManagementHandler:
             "content": result_text
         }
         messages.append(tool_response_message)
+    
+    def _update_message_history_with_models(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_call: Any,
+        result_text: str
+    ) -> None:
+        """Update message history using Pydantic models"""
+        try:
+            # Extract tool information and create models
+            tool_call_model = self.as_tool_call_model(tool_call)
+            if not tool_call_model:
+                # Fall back to standard update if model creation fails
+                self._update_message_history(messages, tool_call, result_text)
+                return
+                
+            # Create assistant message with tool call
+            assistant_message = Message(
+                role="assistant",
+                content=None,
+                tool_calls=[tool_call_model]
+            )
+            
+            # Create tool response message
+            tool_response = Message(
+                role="tool",
+                tool_call_id=tool_call_model.id,
+                content=result_text
+            )
+            
+            # Add to messages in OpenAI format
+            messages.append(assistant_message.to_openai_format())
+            messages.append(tool_response.to_openai_format())
+            
+        except Exception as e:
+            logger.error(f"Error updating message history with models: {e}")
+            # Fall back to standard update
+            self._update_message_history(messages, tool_call, result_text)
