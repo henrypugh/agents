@@ -1,11 +1,15 @@
 from typing import Dict, List, Any
 from datetime import datetime
+from contextlib import AsyncExitStack
+import logging
 
 from mcp import ClientSession
 from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
 
-from src.utils.decorators import server_connection, tool_execution
+from src.utils.decorators import server_connection, tool_execution, resource_cleanup
+
+logger = logging.getLogger("ServerInstance")
 
 class ServerInstance:
     """Manages the connection to a single MCP server"""
@@ -15,8 +19,9 @@ class ServerInstance:
         self.session = session
         self.tools = []
         self.connected_at = datetime.now()
+        self.stack = AsyncExitStack()  # Each instance manages its own resources
         
-    @server_connection()
+    @server_connection
     async def initialize(self) -> None:
         """Initialize the connection and fetch tools"""
         await self.refresh_tools()
@@ -41,7 +46,7 @@ class ServerInstance:
         
         return self.tools
         
-    @tool_execution()
+    @tool_execution
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """
         Execute a tool on this server
@@ -89,3 +94,24 @@ class ServerInstance:
             formatted_tools.append(tool_dict)
             
         return formatted_tools
+        
+    @resource_cleanup
+    async def cleanup(self) -> None:
+        """
+        Clean up resources specific to this server instance
+        """
+        logger.info(f"Cleaning up resources for server '{self.server_name}'")
+        
+        # Track the cleanup operation
+        Traceloop.set_association_properties({
+            "server_name": self.server_name,
+            "cleanup_operation": "server_instance"
+        })
+        
+        try:
+            # Close the stack to release any resources this instance manages
+            await self.stack.aclose()
+            logger.info(f"Successfully cleaned up resources for server '{self.server_name}'")
+        except Exception as e:
+            logger.error(f"Error cleaning up resources for server '{self.server_name}': {str(e)}")
+            raise

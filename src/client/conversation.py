@@ -809,20 +809,103 @@ class Conversation:
             "count": len(connected_servers)
         }
         
-        for server_name, tools in connected_servers.items():
-            result["connected_servers"][server_name] = tools
+        for server_name, server_info in connected_servers.items():
+            result["connected_servers"][server_name] = {
+                "tools": [tool["function"]["name"] for tool in server_info.get("tools", [])]
+            }
         
         # Format for display
         if connected_servers:
             server_list = []
-            for server_name, tools in connected_servers.items():
-                server_list.append(f"{server_name} - Available tools: {', '.join(tools)}")
+            for server_name, info in connected_servers.items():
+                tools = [tool["function"]["name"] for tool in info.get("tools", [])]
+                tool_count = len(tools)
+                server_list.append(f"{server_name} ({tool_count} tools available)")
             
             result_text = f"Connected servers ({len(connected_servers)}):\n" + "\n".join(server_list)
         else:
-            result_text = "No connected servers. Use connect_to_server to connect to a server."
+            result_text = "No servers currently connected"
         
         final_text.append(f"[Server management] {result_text}")
         
         # Update message history
         self._update_message_history(messages, tool_call, json.dumps(result))
+
+    @task(name="disconnect_server")
+    async def _handle_disconnect_server(
+        self,
+        tool_call: Any,
+        args: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        final_text: List[str]
+    ) -> None:
+        """Handle disconnect_server tool"""
+        if "server_name" not in args:
+            error_msg = "Missing required argument: server_name"
+            final_text.append(f"[Server management] Error: {error_msg}")
+            self._update_message_history(messages, tool_call, json.dumps({"error": error_msg}))
+            
+            # Track the error
+            Traceloop.set_association_properties({
+                "error": "missing_server_name"
+            })
+            return
+            
+        server_name = args["server_name"]
+        
+        # Track the server being disconnected
+        Traceloop.set_association_properties({
+            "target_server": server_name
+        })
+        
+        # Check if server is connected
+        connected_servers = self.server_manager.get_connected_servers()
+        
+        if server_name not in connected_servers:
+            error_msg = f"Server '{server_name}' is not currently connected. Connected servers: {', '.join(connected_servers.keys())}"
+            final_text.append(f"[Server management] Error: {error_msg}")
+            self._update_message_history(messages, tool_call, json.dumps({"error": error_msg}))
+            
+            # Track the error
+            Traceloop.set_association_properties({
+                "error": "server_not_connected",
+                "connected_servers": ",".join(connected_servers.keys())
+            })
+            return
+        
+        # Disconnect from the server
+        try:
+            await self.server_manager.disconnect_server(server_name)
+            result_text = f"Successfully disconnected from server: {server_name}"
+            final_text.append(f"[Server management] {result_text}")
+            
+            # Track successful disconnection
+            Traceloop.set_association_properties({
+                "disconnection_status": "success"
+            })
+            
+            # Update message history
+            self._update_message_history(messages, tool_call, json.dumps({
+                "success": True,
+                "server_name": server_name,
+                "message": result_text
+            }))
+            
+            # Get follow-up response with updated tools
+            updated_tools = self.server_manager.collect_all_tools() + self.server_management_tools
+            await self._get_follow_up_response(messages, updated_tools, final_text)
+            
+        except Exception as e:
+            error_msg = f"Failed to disconnect from server '{server_name}': {str(e)}"
+            final_text.append(f"[Server management] Error: {error_msg}")
+            self._update_message_history(messages, tool_call, json.dumps({
+                "success": False,
+                "error": error_msg
+            }))
+            
+            # Track the error
+            Traceloop.set_association_properties({
+                "disconnection_status": "error",
+                "error_type": type(e).__name__,
+                "error_message": str(e)
+            })

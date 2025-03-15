@@ -26,7 +26,7 @@ class ServerRegistry:
     def __init__(self):
         """Initialize the server manager"""
         self.servers = {}  # Dictionary to store server connections
-        self.exit_stack = AsyncExitStack()
+        self.exit_stack = AsyncExitStack()  # For shared/global resources
         self.config_manager = ServerConfig()
         logger.info("ServerRegistry initialized")
         
@@ -76,14 +76,116 @@ class ServerRegistry:
         if server:
             return server.get_openai_format_tools()
         return []
-        
-    @resource_cleanup()
-    async def cleanup(self) -> None:
-        """Clean up resources"""
-        logger.info("Cleaning up server connections")
-        await self.exit_stack.aclose()
     
-    @server_connection()
+    @server_connection
+    async def disconnect_server(self, server_name: str) -> Dict[str, Any]:
+        """
+        Disconnect a specific server
+        
+        Args:
+            server_name: Name of the server to disconnect
+            
+        Returns:
+            Dictionary with status information
+        """
+        logger.info(f"Disconnecting server: {server_name}")
+        
+        # Track the disconnection operation
+        Traceloop.set_association_properties({
+            "server_name": server_name,
+            "disconnect_operation": "started"
+        })
+        
+        if server_name not in self.servers:
+            logger.warning(f"Server '{server_name}' not found, cannot disconnect")
+            return {
+                "status": "not_connected",
+                "server": server_name,
+                "message": f"Server '{server_name}' is not connected"
+            }
+            
+        try:
+            # Get server instance
+            server = self.servers[server_name]
+            
+            # Cleanup server resources
+            await server.cleanup()
+            
+            # Remove from servers dictionary
+            self.servers.pop(server_name)
+            
+            # Track successful disconnection
+            Traceloop.set_association_properties({
+                "disconnect_operation": "success"
+            })
+            
+            logger.info(f"Successfully disconnected from server: {server_name}")
+            return {
+                "status": "disconnected",
+                "server": server_name,
+                "message": f"Successfully disconnected from server: {server_name}"
+            }
+        except Exception as e:
+            error_msg = f"Error disconnecting from server '{server_name}': {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            
+            # Track disconnection error
+            Traceloop.set_association_properties({
+                "disconnect_operation": "error",
+                "error_type": type(e).__name__,
+                "error_message": str(e)
+            })
+            
+            return {
+                "status": "error",
+                "server": server_name,
+                "error": error_msg
+            }
+        
+    @resource_cleanup
+    async def cleanup(self) -> None:
+        """Clean up all resources"""
+        logger.info("Cleaning up server connections")
+        
+        # Track cleanup start
+        Traceloop.set_association_properties({
+            "cleanup_operation": "all_servers",
+            "server_count": len(self.servers)
+        })
+        
+        # Keep track of any errors that occur
+        errors = []
+        
+        # Clean up each server individually
+        for server_name, server in list(self.servers.items()):
+            try:
+                logger.info(f"Cleaning up server: {server_name}")
+                await server.cleanup()
+                logger.info(f"Successfully cleaned up server: {server_name}")
+            except Exception as e:
+                error_msg = f"Error cleaning up server '{server_name}': {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append((server_name, str(e)))
+        
+        # Clear servers dictionary after all cleanup attempts
+        self.servers.clear()
+        
+        # Clean up global resources with the main exit stack
+        await self.exit_stack.aclose()
+        
+        # Track cleanup completion
+        Traceloop.set_association_properties({
+            "cleanup_complete": True,
+            "error_count": len(errors)
+        })
+        
+        # Log summary of cleanup
+        if errors:
+            logger.warning(f"Completed cleanup with {len(errors)} errors")
+        else:
+            logger.info("Successfully cleaned up all server connections")
+    
+    @server_connection
     async def connect_to_server(self, server_script_path: str) -> str:
         """
         Connect to an MCP server using a script path
@@ -116,7 +218,7 @@ class ServerRegistry:
         logger.info(f"Connected to server {server_name} with tools: {server.get_tool_names()}")
         return server_name
 
-    @server_connection()
+    @server_connection
     async def connect_to_configured_server(self, server_name: str) -> Dict[str, Any]:
         """
         Connect to an MCP server defined in configuration
