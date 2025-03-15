@@ -1,11 +1,15 @@
 """
 Server Registry module for managing MCP server connections.
+
+This module provides Pydantic-validated registry for MCP server connections,
+managing connection lifecycle and tool discovery.
 """
 
 import logging
 import os
 import shutil
-from typing import Dict, List, Optional, Any
+import time
+from typing import Dict, List, Optional, Any, Tuple, Set, cast
 from contextlib import AsyncExitStack
 
 from mcp import ClientSession, StdioServerParameters
@@ -14,29 +18,54 @@ from mcp.client.stdio import stdio_client
 from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
 
-from src.utils.schemas import ServerInfo, ServerToolInfo
+from src.utils.schemas import (
+    ServerInfo,
+    ServerToolInfo,
+    ServerStatus
+)
 from src.client.server_instance import ServerInstance
 from src.client.server_config import ServerConfig
 from src.utils.decorators import server_connection, resource_cleanup
 
-logger = logging.getLogger("ServerRegistry")
+logger = logging.getLogger(__name__)
 
 class ServerRegistry:
-    """Manages connections to MCP servers"""
+    """
+    Manages connections to MCP servers using Pydantic validation.
+    
+    This class handles:
+    - Server discovery and connection management
+    - Tool collection across servers
+    - Server configuration and environment management
+    - Resource cleanup
+    """
     
     def __init__(self):
         """Initialize the server registry"""
-        self.servers = {}  # Dictionary to store server connections
+        self.servers: Dict[str, ServerInstance] = {}  # Dictionary to store server connections
         self.exit_stack = AsyncExitStack()  # For shared/global resources
         self.config_manager = ServerConfig()
         logger.info("ServerRegistry initialized")
         
     def get_server(self, server_name: str) -> Optional[ServerInstance]:
-        """Get a server connection by name"""
+        """
+        Get a server connection by name
+        
+        Args:
+            server_name: Name of the server
+            
+        Returns:
+            Server instance or None if not found
+        """
         return self.servers.get(server_name)
         
     def collect_all_tools(self) -> List[Dict[str, Any]]:
-        """Collect tools from all connected servers"""
+        """
+        Collect tools from all connected servers in OpenAI format
+        
+        Returns:
+            List of tools in OpenAI format
+        """
         all_tools = []
         for server in self.servers.values():
             all_tools.extend(server.get_openai_format_tools())
@@ -44,7 +73,12 @@ class ServerRegistry:
         return all_tools
     
     def collect_all_tools_as_models(self) -> List[ServerToolInfo]:
-        """Collect tools from all connected servers as Pydantic models"""
+        """
+        Collect tools from all connected servers as Pydantic models
+        
+        Returns:
+            List of ServerToolInfo models
+        """
         all_tools = []
         try:
             for server in self.servers.values():
@@ -55,14 +89,27 @@ class ServerRegistry:
             return []
         
     def get_server_tools(self, server_name: str) -> List[Dict[str, Any]]:
-        """Get tools from a specific server"""
+        """
+        Get tools from a specific server
+        
+        Args:
+            server_name: Name of the server
+            
+        Returns:
+            List of tools in OpenAI format
+        """
         server = self.get_server(server_name)
         if server:
             return server.get_openai_format_tools()
         return []
     
     def get_connected_servers(self) -> Dict[str, Dict[str, Any]]:
-        """Get information about connected servers"""
+        """
+        Get information about connected servers
+        
+        Returns:
+            Dictionary of server information
+        """
         result = {}
         for server_name, server in self.servers.items():
             result[server_name] = {
@@ -72,7 +119,12 @@ class ServerRegistry:
         return result
     
     def get_connected_servers_as_models(self) -> List[ServerInfo]:
-        """Get information about connected servers as ServerInfo models"""
+        """
+        Get connected servers as Pydantic models
+        
+        Returns:
+            List of ServerInfo models
+        """
         try:
             return [server.get_server_info_as_model() for server in self.servers.values()]
         except Exception as e:
@@ -80,14 +132,24 @@ class ServerRegistry:
             return []
     
     def get_primary_server(self) -> Optional[str]:
-        """Get the name of the primary server if any"""
+        """
+        Get the name of the primary server if any
+        
+        Returns:
+            Server name or None
+        """
         # Use the first server as primary if available
         if self.servers:
             return next(iter(self.servers.keys()))
         return None
     
     async def get_available_servers(self) -> Dict[str, Dict[str, Any]]:
-        """Get all available servers from configuration"""
+        """
+        Get all available servers from configuration
+        
+        Returns:
+            Dictionary of server information
+        """
         try:
             # Get server configurations
             config = self.config_manager.load_config()
@@ -109,7 +171,12 @@ class ServerRegistry:
             return {}
     
     async def get_available_configured_servers(self) -> List[str]:
-        """Get list of available configured servers"""
+        """
+        Get list of available configured servers
+        
+        Returns:
+            List of server names
+        """
         try:
             # Get server configurations
             config = self.config_manager.load_config()
@@ -119,7 +186,12 @@ class ServerRegistry:
             return []
     
     async def get_available_servers_as_models(self) -> List[ServerInfo]:
-        """Get all available servers as ServerInfo models"""
+        """
+        Get all available servers as Pydantic models
+        
+        Returns:
+            List of ServerInfo models
+        """
         try:
             available_servers = []
             
@@ -138,7 +210,7 @@ class ServerRegistry:
                     available_servers.append(ServerInfo(
                         name=server_name,
                         connected=False,
-                        status="disconnected",
+                        status=ServerStatus.DISCONNECTED,
                         tools=[]
                     ))
                 
@@ -149,7 +221,15 @@ class ServerRegistry:
     
     @server_connection
     async def disconnect_server(self, server_name: str) -> Dict[str, Any]:
-        """Disconnect a specific server"""
+        """
+        Disconnect a specific server
+        
+        Args:
+            server_name: Name of the server to disconnect
+            
+        Returns:
+            Status dictionary
+        """
         logger.info(f"Disconnecting server: {server_name}")
         
         # Track the disconnection operation
@@ -220,7 +300,18 @@ class ServerRegistry:
     
     @server_connection
     async def connect_to_server(self, server_script_path: str) -> str:
-        """Connect to an MCP server using a script path"""
+        """
+        Connect to an MCP server using a script path
+        
+        Args:
+            server_script_path: Path to server script
+            
+        Returns:
+            Server name
+            
+        Raises:
+            ValueError: If script path is invalid
+        """
         logger.info(f"Connecting to server with script: {server_script_path}")
         
         # Validate script file extension and get command
@@ -242,7 +333,18 @@ class ServerRegistry:
 
     @server_connection
     async def connect_to_configured_server(self, server_name: str) -> Dict[str, Any]:
-        """Connect to an MCP server defined in configuration"""
+        """
+        Connect to an MCP server defined in configuration
+        
+        Args:
+            server_name: Name of the server
+            
+        Returns:
+            Status dictionary
+            
+        Raises:
+            ValueError: If server configuration is invalid
+        """
         logger.info(f"Connecting to configured server: {server_name}")
         
         # Check if already connected
@@ -265,15 +367,23 @@ class ServerRegistry:
             server_params = self._create_config_server_params(server_name, server_config)
             
             # Connect and create server connection
+            connection_start = time.time()
             session = await self._create_server_session(server_params)
             server = ServerInstance(server_name, session)
             await server.initialize()
+            connection_time = time.time() - connection_start
             
             # Store server connection
             self.servers[server_name] = server
             
             # Get tool names for response
             tool_names = server.get_tool_names()
+            
+            # Track connection metrics
+            Traceloop.set_association_properties({
+                "connection_time": connection_time,
+                "tool_count": len(tool_names)
+            })
             
             return {
                 "status": "connected",
@@ -294,7 +404,15 @@ class ServerRegistry:
 
     @task(name="create_server_session")
     async def _create_server_session(self, server_params: StdioServerParameters) -> ClientSession:
-        """Create and initialize a server session"""
+        """
+        Create and initialize a server session
+        
+        Args:
+            server_params: Server parameters
+            
+        Returns:
+            Initialized client session
+        """
         # Track the server session creation
         if hasattr(server_params, 'command') and hasattr(server_params, 'args'):
             Traceloop.set_association_properties({
@@ -309,8 +427,19 @@ class ServerRegistry:
         return session
         
     @task(name="create_script_server_params")
-    def _create_script_server_params(self, script_path: str) -> tuple:
-        """Create server parameters for a script path"""
+    def _create_script_server_params(self, script_path: str) -> Tuple[str, StdioServerParameters]:
+        """
+        Create server parameters for a script path
+        
+        Args:
+            script_path: Path to server script
+            
+        Returns:
+            Tuple of (command, server_params)
+            
+        Raises:
+            ValueError: If script path is invalid
+        """
         # Validate script file extension
         is_python = script_path.endswith('.py')
         is_js = script_path.endswith('.js')
@@ -329,7 +458,19 @@ class ServerRegistry:
         
     @task(name="create_config_server_params")
     def _create_config_server_params(self, server_name: str, server_config: Dict[str, Any]) -> StdioServerParameters:
-        """Create server parameters from configuration"""
+        """
+        Create server parameters from configuration
+        
+        Args:
+            server_name: Name of the server
+            server_config: Server configuration dictionary
+            
+        Returns:
+            Server parameters
+            
+        Raises:
+            ValueError: If configuration is invalid
+        """
         # Validate required fields
         if 'command' not in server_config:
             raise ValueError(f"Server '{server_name}' configuration missing 'command' field")

@@ -1,7 +1,7 @@
 """
 Runner script for the SimpleAgent.
 
-This script initializes and runs the SimpleAgent for code analysis tasks.
+This module initializes and runs the SimpleAgent for code analysis tasks.
 """
 
 import asyncio
@@ -20,6 +20,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.client.agent import Agent
+from src.utils.schemas import ConnectResponseStatus
 
 from dotenv import load_dotenv
 from src.utils.logger_setup import setup_logging
@@ -37,7 +38,7 @@ load_dotenv()
 # Initialize Traceloop
 Traceloop.init(
   disable_batch=True, 
-  api_key=os.getenv("TRACEL_API_KEY")
+  api_key=os.getenv("TRACELOOP_API_KEY")
 )
 
 # Setup logging
@@ -231,7 +232,8 @@ async def connect_to_main_server(client):
     try:
         result = await client.connect_to_configured_server("main-server")
         
-        if not result or result.get("status") not in ["connected", "already_connected"]:
+        # Check response using Pydantic model attributes
+        if result.status not in [ConnectResponseStatus.CONNECTED, ConnectResponseStatus.ALREADY_CONNECTED]:
             logger.error("Failed to connect to main server")
             
             # Track connection failure
@@ -242,10 +244,10 @@ async def connect_to_main_server(client):
             
             raise RuntimeError("Failed to connect to main server")
             
-        # Track successful connection
+        # Track successful connection - use dot notation for our Pydantic models
         Traceloop.set_association_properties({
             "connection_stage": "connected",
-            "tool_count": len(result.get("tools", []))
+            "tool_count": len(result.tools or [])
         })
         
         logger.info("Successfully connected to main server")

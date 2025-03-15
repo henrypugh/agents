@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.client.llm_service import LLMService
 from src.client.server_registry import ServerRegistry
 from src.client.tool_processor import ToolExecutor 
+from src.utils.schemas import LLMResponse
 
 import logging
 import json
@@ -303,8 +304,8 @@ class SimpleAgent:
                 []  # No tools for planning
             )
             
-            # Track the planning response
-            plan_text = response.choices[0].message.content
+            # Track the planning response - Use content for LLMResponse
+            plan_text = response.content or ""
             span.report_response(
                 self.llm_client.model,
                 [plan_text]
@@ -424,7 +425,7 @@ class SimpleAgent:
                     # Get server
                     server = self.server_manager.get_server(server_name)
                     if not server:
-                        raise ValueError(f"Server not found: {server_name}")
+                        raise ValueError(f"Server '{server_name}' not found")
                     
                     # Execute tool
                     logger.info(f"Executing tool: {tool_name} with args: {args}")
@@ -564,8 +565,8 @@ class SimpleAgent:
                 []  # No tools for recommendations
             )
             
-            # Track the recommendation response
-            recommendation_text = response.choices[0].message.content
+            # Track the recommendation response - use content for LLMResponse
+            recommendation_text = response.content or ""
             span.report_response(
                 self.llm_client.model,
                 [recommendation_text]

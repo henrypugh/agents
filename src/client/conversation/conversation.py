@@ -1,5 +1,8 @@
 """
 Main conversation interface for handling LLM interactions.
+
+This module provides a Pydantic-integrated conversation manager
+that coordinates message processing, response handling, and tool execution.
 """
 
 import logging
@@ -8,7 +11,14 @@ from typing import Dict, List, Any, Optional
 from traceloop.sdk import Traceloop
 
 from src.utils.decorators import message_processing
-from src.utils.schemas import Message, LLMResponse
+from src.utils.schemas import (
+    Message, 
+    MessageRole, 
+    ToolCall, 
+    LLMResponse,
+    ServerInfo,
+    ServerToolInfo
+)
 from .message_processor import MessageProcessor
 from .response_processor import ResponseProcessor
 from .server_management import ServerManagementHandler
@@ -16,10 +26,18 @@ from src.client.llm_service import LLMService
 from src.client.server_registry import ServerRegistry
 from src.client.tool_processor import ToolExecutor
 
-logger = logging.getLogger("Conversation")
+logger = logging.getLogger(__name__)
 
 class Conversation:
-    """Manages conversations with LLMs and tool execution"""
+    """
+    Manages conversations with LLMs and tool execution using Pydantic models.
+    
+    This class orchestrates:
+    - Message processing and history management
+    - Tool discovery and execution
+    - LLM response handling
+    - Server management
+    """
     
     def __init__(
         self, 
@@ -66,8 +84,11 @@ class Conversation:
         """
         logger.info(f"Processing query: {query}")
         
-        # Initialize conversation with user query
-        messages = [{"role": "user", "content": query}]
+        # Create validated user message
+        user_message = Message.user(query)
+        
+        # Initialize conversation with validated user message
+        messages = [user_message]
         
         # Collect tools from all connected servers and add server management tools
         all_tools = self.server_manager.collect_all_tools() + self.server_management_tools
@@ -86,46 +107,91 @@ class Conversation:
         )
     
     @message_processing()
-    async def process_query_with_models(self, query: str) -> str:
+    async def process_query_with_history(
+        self, 
+        query: str, 
+        history: List[Message]
+    ) -> str:
         """
-        Process a user query using Pydantic models for improved validation
+        Process a user query with existing conversation history
         
         Args:
             query: User query text
+            history: Existing conversation history
             
         Returns:
             Generated response
         """
-        logger.info(f"Processing query with models: {query}")
+        logger.info(f"Processing query with history: {query}")
         
-        try:
-            # Create user message with validation
-            user_message = Message(role="user", content=query)
-            
-            # Initialize conversation with validated user message
-            messages = [user_message.to_openai_format()]
-            
-            # Collect tools from all connected servers and add server management tools
-            all_tools = self.server_manager.collect_all_tools() + self.server_management_tools
-            
-            # Track conversation metrics
-            Traceloop.set_association_properties({
-                "query_length": len(query),
-                "tool_count": len(all_tools),
-                "using_models": True
-            })
-            
-            # Run the conversation
-            return await self.message_processor.run_conversation(
-                messages, 
-                all_tools,
-                self.response_processor
-            )
-        except Exception as e:
-            logger.error(f"Error processing query with models: {e}")
-            # Fall back to standard processing if model validation fails
-            return await self.process_query(query)
+        # Create validated user message
+        user_message = Message.user(query)
+        
+        # Add user message to history
+        messages = history + [user_message]
+        
+        # Collect tools from all connected servers and add server management tools
+        all_tools = self.server_manager.collect_all_tools() + self.server_management_tools
+        
+        # Track conversation metrics
+        Traceloop.set_association_properties({
+            "query_length": len(query),
+            "history_length": len(history),
+            "tool_count": len(all_tools)
+        })
+        
+        # Run the conversation
+        return await self.message_processor.run_conversation(
+            messages, 
+            all_tools,
+            self.response_processor
+        )
     
     def get_available_tools(self) -> List[Dict[str, Any]]:
-        """Get all available tools including server management tools"""
+        """
+        Get all available tools including server management tools
+        
+        Returns:
+            List of tools in OpenAI format
+        """
         return self.server_manager.collect_all_tools() + self.server_management_tools
+    
+    def get_available_tools_as_models(self) -> List[ServerToolInfo]:
+        """
+        Get all available tools as Pydantic models
+        
+        Returns:
+            List of tool info models
+        """
+        return self.server_manager.collect_all_tools_as_models()
+    
+    async def get_available_servers(self) -> List[ServerInfo]:
+        """
+        Get list of available servers as Pydantic models
+        
+        Returns:
+            List of server info models
+        """
+        return await self.server_manager.get_available_servers_as_models()
+    
+    def get_connected_servers(self) -> List[ServerInfo]:
+        """
+        Get list of connected servers as Pydantic models
+        
+        Returns:
+            List of server info models
+        """
+        return self.server_manager.get_connected_servers_as_models()
+    
+    @staticmethod
+    def create_system_prompt(content: str) -> Message:
+        """
+        Create a system prompt message
+        
+        Args:
+            content: System prompt content
+            
+        Returns:
+            System message
+        """
+        return Message.system(content)

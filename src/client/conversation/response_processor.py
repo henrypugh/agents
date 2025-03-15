@@ -1,9 +1,13 @@
 """
 Response Processor module for handling LLM response parsing and processing.
+
+This module provides Pydantic-integrated processing for LLM responses,
+including tool call handling and follow-up response management.
 """
 
 import logging
-from typing import Dict, List, Any, Optional
+import json
+from typing import Dict, List, Any, Optional, Protocol, Callable, Awaitable, Set
 
 from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
@@ -11,18 +15,43 @@ from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
 from src.client.llm_service import LLMService
 from src.client.tool_processor import ToolExecutor
-from src.utils.schemas import ToolCall, LLMResponse
+from src.utils.schemas import (
+    Message,
+    ToolCall,
+    LLMResponse,
+    FinishReason,
+    MessageRole
+)
 
-logger = logging.getLogger("ResponseProcessor")
+logger = logging.getLogger(__name__)
+
+class ServerManagementProtocol(Protocol):
+    """Protocol defining the server management handler interface"""
+    async def handle_server_management_tool(
+        self,
+        tool_call: ToolCall,
+        messages: List[Message],
+        tools: List[Dict[str, Any]],
+        final_text: List[str],
+        response_processor: 'ResponseProcessor'
+    ) -> None:
+        ...
 
 class ResponseProcessor:
-    """Processes LLM responses and handles tool execution"""
+    """
+    Processes LLM responses and handles tool execution with Pydantic validation.
+    
+    This class handles:
+    - Processing of validated LLM responses
+    - Tool call extraction and execution
+    - Follow-up response management
+    """
     
     def __init__(
         self,
         llm_client: LLMService,
         tool_processor: ToolExecutor,
-        server_handler
+        server_handler: ServerManagementProtocol
     ):
         """
         Initialize the response processor
@@ -35,13 +64,21 @@ class ResponseProcessor:
         self.llm_client = llm_client
         self.tool_processor = tool_processor
         self.server_handler = server_handler
+        
+        # Set of tools that are server management tools
+        self.server_management_tools: Set[str] = {
+            "list_available_servers", 
+            "connect_to_server", 
+            "list_connected_servers"
+        }
+        
         logger.info("ResponseProcessor initialized")
     
     @task(name="process_llm_response")
     async def process_response(
         self,
-        response: Any,
-        messages: List[Dict[str, Any]],
+        response: LLMResponse,
+        messages: List[Message],
         tools: List[Dict[str, Any]],
         final_text: List[str]
     ) -> None:
@@ -49,58 +86,35 @@ class ResponseProcessor:
         Process an LLM response and handle tool calls
         
         Args:
-            response: LLM response object
+            response: Validated LLM response
             messages: Conversation history
             tools: Available tools
             final_text: List to append text to
         """
         try:
-            # New structure for responses API
-            if response.status != "completed":
-                final_text.append(f"Response status: {response.status}. Unable to process.")
+            # Check for error in response
+            if response.finish_reason == FinishReason.ERROR:
+                error_msg = response.content or "Unknown error in LLM response"
+                final_text.append(f"Error: {error_msg}")
                 return
-            
-            # Extract output from response
-            if not hasattr(response, 'output') or not response.output:
-                final_text.append("No output in the response.")
-                return
-            
-            # Check for text content first
-            content_added = False
-            output_text = None
-            
-            if hasattr(response, 'output_text') and response.output_text:
-                output_text = response.output_text
-                final_text.append(output_text)
-                content_added = True
-            else:
-                # Manually extract text from output
-                for item in response.output:
-                    if getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                        for content_item in item.content:
-                            if getattr(content_item, 'type', '') == 'output_text' and hasattr(content_item, 'text'):
-                                text = content_item.text.strip()
-                                if text:
-                                    final_text.append(text)
-                                    content_added = True
-                                    output_text = text  # Save for later reference
-            
-            # Check for tool calls in the response
-            tool_calls = self._extract_tool_calls(response)
-            
+                
+            # Extract text content if available
+            if response.content:
+                final_text.append(response.content)
+                
             # Track the type of response received
-            has_tool_calls = bool(tool_calls)
+            has_tool_calls = response.has_tool_calls()
             Traceloop.set_association_properties({
                 "response_type": "tool_calls" if has_tool_calls else "text",
-                "has_content": content_added,
-                "tool_call_count": len(tool_calls) if has_tool_calls else 0
+                "has_content": response.content is not None,
+                "tool_call_count": len(response.tool_calls) if has_tool_calls else 0
             })
             
             logger.info(f"LLM tool usage decision: {'Used tools' if has_tool_calls else 'Did NOT use any tools'}")
             
-            if has_tool_calls:
-                # Process each tool call
-                for tool_call in tool_calls:
+            # Process tool calls if any
+            if has_tool_calls and response.tool_calls:
+                for tool_call in response.tool_calls:
                     await self.process_tool_call(tool_call, messages, tools, final_text)
         
         except Exception as e:
@@ -113,61 +127,11 @@ class ResponseProcessor:
                 "error_type": type(e).__name__
             })
     
-    @staticmethod
-    def _extract_tool_calls(response: Any) -> List[Any]:
-        """Extract tool calls from response object"""
-        tool_calls = []
-        for item in response.output:
-            if getattr(item, 'type', '') == 'tool_calls':
-                tool_calls.extend(item.tool_calls)
-            
-            # Alternative format to check
-            elif getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                for content_item in item.content:
-                    if getattr(content_item, 'type', '') == 'tool_calls' and hasattr(content_item, 'tool_calls'):
-                        tool_calls.extend(content_item.tool_calls)
-        return tool_calls
-    
-    @staticmethod
-    def extract_tool_calls_as_models(response: Any) -> List[ToolCall]:
-        """Extract tool calls as Pydantic models from response object"""
-        tool_calls = []
-        try:
-            for item in response.output:
-                if getattr(item, 'type', '') == 'tool_calls':
-                    for tc in item.tool_calls:
-                        try:
-                            tool_calls.append(ToolCall(
-                                id=getattr(tc, 'id', 'unknown_id'),
-                                tool_name=tc.function.name,
-                                arguments=tc.function.arguments
-                            ))
-                        except Exception as e:
-                            logger.warning(f"Failed to parse tool call: {e}")
-                
-                # Alternative format
-                elif getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                    for content_item in item.content:
-                        if getattr(content_item, 'type', '') == 'tool_calls' and hasattr(content_item, 'tool_calls'):
-                            for tc in content_item.tool_calls:
-                                try:
-                                    tool_calls.append(ToolCall(
-                                        id=getattr(tc, 'id', 'unknown_id'),
-                                        tool_name=tc.function.name,
-                                        arguments=tc.function.arguments
-                                    ))
-                                except Exception as e:
-                                    logger.warning(f"Failed to parse tool call: {e}")
-        except Exception as e:
-            logger.error(f"Error extracting tool calls as models: {e}")
-        
-        return tool_calls
-    
     @task(name="process_tool_call")
     async def process_tool_call(
         self,
-        tool_call: Any,
-        messages: List[Dict[str, Any]],
+        tool_call: ToolCall,
+        messages: List[Message],
         tools: List[Dict[str, Any]],
         final_text: List[str]
     ) -> None:
@@ -175,30 +139,21 @@ class ResponseProcessor:
         Process a single tool call
         
         Args:
-            tool_call: Tool call from LLM
+            tool_call: Validated tool call model
             messages: Conversation history
             tools: Available tools
             final_text: List to append text to
         """
-        logger.debug(f"Processing tool call: {tool_call}")
-        
-        # Get tool details from the structure
-        if hasattr(tool_call, 'function'):
-            tool_name = tool_call.function.name
-            tool_id = getattr(tool_call, 'id', 'unknown_id')
-        else:
-            # Alternative structure
-            tool_name = getattr(tool_call, 'name', 'unknown')
-            tool_id = getattr(tool_call, 'id', 'unknown_id')
+        logger.debug(f"Processing tool call: {tool_call.tool_name}")
         
         # Track the tool call details
         Traceloop.set_association_properties({
-            "tool_call_id": tool_id,
-            "tool_name": tool_name
+            "tool_call_id": tool_call.id,
+            "tool_name": tool_call.tool_name
         })
         
         # Check if this is an internal server management tool
-        if tool_name in ["list_available_servers", "connect_to_server", "list_connected_servers"]:
+        if tool_call.tool_name in self.server_management_tools:
             await self.server_handler.handle_server_management_tool(
                 tool_call, messages, tools, final_text, self
             )
@@ -216,7 +171,7 @@ class ResponseProcessor:
     @task(name="get_follow_up_response")
     async def get_follow_up_response(
         self,
-        messages: List[Dict[str, Any]],
+        messages: List[Message],
         available_tools: List[Dict[str, Any]],
         final_text: List[str]
     ) -> None:
@@ -237,11 +192,14 @@ class ResponseProcessor:
         })
         
         try:
+            # Convert Message models to OpenAI format for Traceloop tracking
+            openai_messages = [message.to_openai_format() for message in messages]
+            
             # Using track_llm_call for the follow-up request
             with track_llm_call(vendor="openrouter", type="chat") as span:
                 # Report the request to Traceloop
                 llm_messages = []
-                for msg in messages:
+                for msg in openai_messages:
                     if "role" in msg and "content" in msg and msg["content"] is not None:
                         llm_messages.append(LLMMessage(
                             role=msg["role"],
@@ -255,10 +213,10 @@ class ResponseProcessor:
                 )
                 
                 # Get follow-up response from LLM
-                follow_up_response = await self.llm_client.get_completion(messages, available_tools)
+                follow_up_response = await self.llm_client.get_completion(openai_messages, available_tools)
                 
                 # Extract and report the text response for Traceloop
-                follow_up_text = self._extract_text_from_response(follow_up_response)
+                follow_up_text = follow_up_response.content
                 
                 # Report the response to Traceloop
                 span.report_response(
@@ -266,24 +224,20 @@ class ResponseProcessor:
                     [follow_up_text] if follow_up_text else []
                 )
             
-            # Check for text content in the response
-            output_text = self._extract_text_from_response(follow_up_response)
-            if output_text:
-                logger.debug(f"Got follow-up content: {output_text[:100]}...")
-                final_text.append(output_text)
+            # Add text content to final result if available
+            if follow_up_response.content:
+                logger.debug(f"Got follow-up content: {follow_up_response.content[:100]}...")
+                final_text.append(follow_up_response.content)
                 
                 # Track successful follow-up with content
                 Traceloop.set_association_properties({
                     "follow_up_status": "success_with_content",
-                    "content_length": len(output_text)
+                    "content_length": len(follow_up_response.content)
                 })
             
-            # Check for tool calls
-            tool_calls = self._extract_tool_calls(follow_up_response)
-            
             # Process tool calls if any
-            if tool_calls:
-                tool_call_count = len(tool_calls)
+            if follow_up_response.has_tool_calls() and follow_up_response.tool_calls:
+                tool_call_count = len(follow_up_response.tool_calls)
                 logger.info(f"Found {tool_call_count} tool calls in follow-up")
                 
                 # Track tool calls
@@ -292,8 +246,8 @@ class ResponseProcessor:
                     "tool_call_count": tool_call_count
                 })
                 
-                # We use individual tool processing to avoid recursion issues
-                for tool_call in tool_calls:
+                # Process each tool call individually to avoid recursion issues
+                for tool_call in follow_up_response.tool_calls:
                     await self.process_tool_call(tool_call, messages, available_tools, final_text)
         
         except Exception as e:
@@ -306,78 +260,3 @@ class ResponseProcessor:
                 "error_type": type(e).__name__,
                 "error_message": str(e)
             })
-    
-    @staticmethod
-    def _extract_text_from_response(response: Any) -> Optional[str]:
-        """Extract text content from LLM response"""
-        if hasattr(response, 'output_text') and response.output_text:
-            return response.output_text.strip()
-        
-        # Try to manually extract text from the output structure
-        for item in response.output:
-            if getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                for content_item in item.content:
-                    if getattr(content_item, 'type', '') == 'output_text' and hasattr(content_item, 'text'):
-                        text = content_item.text.strip()
-                        if text:
-                            return text
-        
-        return None
-    
-    @staticmethod
-    def as_llm_response(response: Any) -> Optional[LLMResponse]:
-        """Convert raw response to LLMResponse model"""
-        try:
-            # Extract text content
-            content = None
-            if hasattr(response, 'output_text') and response.output_text:
-                content = response.output_text.strip()
-            else:
-                for item in response.output:
-                    if getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                        for content_item in item.content:
-                            if getattr(content_item, 'type', '') == 'output_text' and hasattr(content_item, 'text'):
-                                content = content_item.text.strip()
-                                break
-                        if content:
-                            break
-            
-            # Extract tool calls
-            tool_calls = []
-            for item in response.output:
-                if getattr(item, 'type', '') == 'tool_calls':
-                    for tc in item.tool_calls:
-                        try:
-                            tool_calls.append(ToolCall(
-                                id=getattr(tc, 'id', 'unknown_id'),
-                                tool_name=tc.function.name,
-                                arguments=tc.function.arguments
-                            ))
-                        except Exception:
-                            pass
-                elif getattr(item, 'type', '') == 'message' and hasattr(item, 'content'):
-                    for content_item in item.content:
-                        if getattr(content_item, 'type', '') == 'tool_calls' and hasattr(content_item, 'tool_calls'):
-                            for tc in content_item.tool_calls:
-                                try:
-                                    tool_calls.append(ToolCall(
-                                        id=getattr(tc, 'id', 'unknown_id'),
-                                        tool_name=tc.function.name,
-                                        arguments=tc.function.arguments
-                                    ))
-                                except Exception:
-                                    pass
-            
-            # Determine finish reason
-            finish_reason = "stop"
-            if tool_calls:
-                finish_reason = "tool_calls"
-            
-            return LLMResponse(
-                content=content,
-                tool_calls=tool_calls,
-                finish_reason=finish_reason
-            )
-        except Exception as e:
-            logger.error(f"Error converting to LLMResponse: {e}")
-            return None

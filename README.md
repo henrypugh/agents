@@ -360,7 +360,7 @@ pip install -r requirements.txt
 # OPENROUTER_API_KEY=your-openrouter-api-key
 # BRAVE_API_KEY=your-brave-api-key
 # DEFAULT_LLM_MODEL=google/gemini-2.0-flash-001
-# TRACEL_API_KEY=your-traceloop-api-key
+# TRACELOOP_API_KEY=your-traceloop-api-key
 
 # Run with verbose logging
 DEBUG=1 python main.py

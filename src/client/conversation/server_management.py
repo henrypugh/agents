@@ -1,22 +1,51 @@
 """
 Server Management module for handling server-related tools and operations.
+
+This module provides Pydantic-integrated tools and handlers for server management,
+including server discovery, connection, and tool access.
 """
 
 import logging
 import json
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Protocol, Callable, Awaitable
+from enum import Enum
 
 from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
 
 from src.client.server_registry import ServerRegistry
 from src.client.tool_processor import ToolExecutor
-from src.utils.schemas import ToolCall, Message, ServerInfo
+from src.utils.schemas import (
+    ToolCall,
+    Message,
+    ServerInfo,
+    ServerListResponse,
+    ConnectResponse,
+    MessageRole,
+    ConnectResponseStatus
+)
 
-logger = logging.getLogger("ServerManagement")
+logger = logging.getLogger(__name__)
+
+class ResponseProcessorProtocol(Protocol):
+    """Protocol defining the response processor follow-up method"""
+    async def get_follow_up_response(
+        self,
+        messages: List[Message],
+        available_tools: List[Dict[str, Any]],
+        final_text: List[str]
+    ) -> None:
+        ...
 
 class ServerManagementHandler:
-    """Handles server management operations"""
+    """
+    Handles server management operations with Pydantic validation.
+    
+    This class handles:
+    - Server discovery and connection
+    - Creation of server management tools
+    - Processing of server management tool calls
+    """
     
     def __init__(
         self,
@@ -97,56 +126,39 @@ class ServerManagementHandler:
     @task(name="handle_server_management_tool")
     async def handle_server_management_tool(
         self,
-        tool_call: Any,
-        messages: List[Dict[str, Any]],
+        tool_call: ToolCall,
+        messages: List[Message],
         tools: List[Dict[str, Any]],
         final_text: List[str],
-        response_processor
+        response_processor: ResponseProcessorProtocol
     ) -> None:
         """
         Handle server management tool calls
         
         Args:
-            tool_call: Tool call from LLM
+            tool_call: Validated tool call model
             messages: Conversation history
             tools: Available tools
             final_text: List to append text to
             response_processor: Response processor for follow-up handling
         """
-        # Extract tool information from potentially different structures
-        tool_name, tool_args_raw, tool_id = self._extract_tool_info(tool_call)
-        logger.info(f"Handling server management tool: {tool_name}")
+        logger.info(f"Handling server management tool: {tool_call.tool_name}")
         
         # Track the management tool being used
         Traceloop.set_association_properties({
-            "management_tool": tool_name
+            "management_tool": tool_call.tool_name
         })
         
         try:
-            # Parse arguments if any
-            tool_args = {}
-            if tool_args_raw:
-                try:
-                    tool_args = json.loads(tool_args_raw)
-                except json.JSONDecodeError as e:
-                    final_text.append(f"Error parsing arguments: {str(e)}")
-                    
-                    # Track the error
-                    Traceloop.set_association_properties({
-                        "error": "json_decode",
-                        "error_message": str(e)
-                    })
-                    return
-            
             # Handle each tool type
-            if tool_name == "list_available_servers":
+            if tool_call.tool_name == "list_available_servers":
                 await self._handle_list_available_servers(tool_call, messages, final_text)
-            elif tool_name == "connect_to_server":
-                await self._handle_connect_to_server(tool_call, tool_args, messages, final_text, response_processor)
-            elif tool_name == "list_connected_servers":
+            elif tool_call.tool_name == "connect_to_server":
+                await self._handle_connect_to_server(tool_call, messages, final_text, response_processor, tools)
+            elif tool_call.tool_name == "list_connected_servers":
                 await self._handle_list_connected_servers(tool_call, messages, final_text)
             else:
-                final_text.append(f"Unknown server management tool: {tool_name}")
+                final_text.append(f"Unknown server management tool: {tool_call.tool_name}")
                 
                 # Track the error
                 Traceloop.set_association_properties({
@@ -163,53 +175,23 @@ class ServerManagementHandler:
                 "error_type": type(e).__name__,
                 "error_message": str(e)
             })
-    
-    @staticmethod
-    def _extract_tool_info(tool_call: Any) -> tuple:
-        """Extract tool name, arguments, and ID from tool call object"""
-        if hasattr(tool_call, 'function'):
-            tool_name = tool_call.function.name
-            tool_args = tool_call.function.arguments
-            tool_id = getattr(tool_call, 'id', 'unknown_id')
-        else:
-            # Alternative structure
-            tool_name = getattr(tool_call, 'name', 'unknown')
-            tool_args = getattr(tool_call, 'arguments', '{}')
-            tool_id = getattr(tool_call, 'id', 'unknown_id')
-        
-        return tool_name, tool_args, tool_id
-    
-    @staticmethod
-    def as_tool_call_model(tool_call: Any) -> Optional[ToolCall]:
-        """Convert raw tool call to ToolCall model"""
-        try:
-            if hasattr(tool_call, 'function'):
-                return ToolCall(
-                    id=getattr(tool_call, 'id', 'unknown_id'),
-                    tool_name=tool_call.function.name,
-                    arguments=tool_call.function.arguments
-                )
-            else:
-                return ToolCall(
-                    id=getattr(tool_call, 'id', 'unknown_id'),
-                    tool_name=getattr(tool_call, 'name', 'unknown'),
-                    arguments=getattr(tool_call, 'arguments', '{}')
-                )
-        except Exception as e:
-            logger.error(f"Error converting to ToolCall model: {e}")
-            return None
 
     @task(name="list_available_servers")
     async def _handle_list_available_servers(
         self,
-        tool_call: Any,
-        messages: List[Dict[str, Any]],
+        tool_call: ToolCall,
+        messages: List[Message],
         final_text: List[str]
     ) -> None:
-        """Handle list_available_servers tool"""
-        # Extract tool ID
-        _, _, tool_id = self._extract_tool_info(tool_call)
-            
+        """
+        Handle list_available_servers tool
+        
+        Args:
+            tool_call: Validated tool call
+            messages: Conversation history
+            final_text: List to append text to
+        """
+        # Get available servers
         available_servers = await self.server_manager.get_available_servers()
         
         # Track available servers
@@ -218,14 +200,24 @@ class ServerManagementHandler:
             "available_servers": ",".join(available_servers.keys())
         })
         
-        # Format for JSON response
-        result = {
-            "available_servers": {},
-            "count": len(available_servers)
-        }
-        
+        # Create response model
+        server_info_dict = {}
         for server_name, server_info in available_servers.items():
-            result["available_servers"][server_name] = server_info
+            is_connected = server_info.get("connected", False)
+            server_type = server_info.get("type", "unknown")
+            server_source = server_info.get("source", "unknown")
+            
+            server_info_dict[server_name] = ServerInfo(
+                name=server_name,
+                connected=is_connected,
+                status="connected" if is_connected else "disconnected",
+                tools=[]
+            )
+            
+        response = ServerListResponse(
+            available_servers=server_info_dict,
+            count=len(available_servers)
+        )
         
         # Format for display
         if available_servers:
@@ -242,40 +234,37 @@ class ServerManagementHandler:
         final_text.append(f"[Server management] {result_text}")
         
         # Update message history
-        self._update_message_history(messages, tool_call, json.dumps(result))
+        self._update_message_history(messages, tool_call, response.model_dump_json())
     
-    async def list_available_servers_as_models(self) -> List[ServerInfo]:
-        """Get available servers as ServerInfo models"""
-        try:
-            server_models = []
-            available_servers = await self.server_manager.get_available_servers()
-            
-            for server_name, server_info in available_servers.items():
-                server_models.append(ServerInfo(
-                    name=server_name,
-                    connected=False,
-                    status="disconnected",
-                    tools=[]
-                ))
-            return server_models
-        except Exception as e:
-            logger.error(f"Error getting server models: {e}")
-            return []
-            
     @task(name="connect_to_server")
     async def _handle_connect_to_server(
         self,
-        tool_call: Any,
-        args: Dict[str, Any],
-        messages: List[Dict[str, Any]],
+        tool_call: ToolCall,
+        messages: List[Message],
         final_text: List[str],
-        response_processor
+        response_processor: ResponseProcessorProtocol,
+        tools: List[Dict[str, Any]]
     ) -> None:
-        """Handle connect_to_server tool"""
-        if "server_name" not in args:
-            error_msg = "Missing required argument: server_name"
-            final_text.append(f"[Server management] Error: {error_msg}")
-            self._update_message_history(messages, tool_call, json.dumps({"error": error_msg}))
+        """
+        Handle connect_to_server tool
+        
+        Args:
+            tool_call: Validated tool call
+            messages: Conversation history
+            final_text: List to append text to
+            response_processor: Response processor for follow-up handling
+            tools: Available tools
+        """
+        # Validate arguments
+        if "server_name" not in tool_call.arguments:
+            error_response = ConnectResponse(
+                status=ConnectResponseStatus.ERROR,
+                server="unknown",
+                error="Missing required argument: server_name"
+            )
+            
+            final_text.append(f"[Server management] Error: {error_response.error}")
+            self._update_message_history(messages, tool_call, error_response.model_dump_json())
             
             # Track the error
             Traceloop.set_association_properties({
@@ -283,7 +272,7 @@ class ServerManagementHandler:
             })
             return
             
-        server_name = args["server_name"]
+        server_name = tool_call.arguments["server_name"]
         
         # Track the server being connected to
         Traceloop.set_association_properties({
@@ -294,9 +283,14 @@ class ServerManagementHandler:
         available_servers = await self.server_manager.get_available_servers()
         
         if server_name not in available_servers:
-            error_msg = f"Server '{server_name}' not found. Available servers: {', '.join(available_servers.keys())}"
-            final_text.append(f"[Server management] Error: {error_msg}")
-            self._update_message_history(messages, tool_call, json.dumps({"error": error_msg}))
+            error_response = ConnectResponse(
+                status=ConnectResponseStatus.ERROR,
+                server=server_name,
+                error=f"Server '{server_name}' not found. Available servers: {', '.join(available_servers.keys())}"
+            )
+            
+            final_text.append(f"[Server management] Error: {error_response.error}")
+            self._update_message_history(messages, tool_call, error_response.model_dump_json())
             
             # Track the error
             Traceloop.set_association_properties({
@@ -308,33 +302,48 @@ class ServerManagementHandler:
         # Connect to the server
         try:
             connection_result = await self.server_manager.connect_to_configured_server(server_name)
-            result_text = f"Successfully connected to server: {server_name}"
+            
+            if connection_result.get("status") == "already_connected":
+                response = ConnectResponse(
+                    status=ConnectResponseStatus.ALREADY_CONNECTED,
+                    server=server_name,
+                    tools=connection_result.get("tools", []),
+                    tool_count=connection_result.get("tool_count", 0)
+                )
+                result_text = f"Server {server_name} is already connected"
+            else:
+                response = ConnectResponse(
+                    status=ConnectResponseStatus.CONNECTED,
+                    server=server_name,
+                    tools=connection_result.get("tools", []),
+                    tool_count=connection_result.get("tool_count", 0)
+                )
+                result_text = f"Successfully connected to server: {server_name}"
+                
             final_text.append(f"[Server management] {result_text}")
             
             # Track successful connection
             Traceloop.set_association_properties({
                 "connection_status": "success",
-                "tool_count": len(connection_result.get("tools", []))
+                "tool_count": response.tool_count or 0
             })
             
             # Update message history
-            self._update_message_history(messages, tool_call, json.dumps({
-                "success": True,
-                "server_name": server_name,
-                "message": result_text
-            }))
+            self._update_message_history(messages, tool_call, response.model_dump_json())
             
             # Get follow-up response with updated tools
             updated_tools = self.server_manager.collect_all_tools() + self.create_server_management_tools()
             await response_processor.get_follow_up_response(messages, updated_tools, final_text)
             
         except Exception as e:
-            error_msg = f"Failed to connect to server '{server_name}': {str(e)}"
-            final_text.append(f"[Server management] Error: {error_msg}")
-            self._update_message_history(messages, tool_call, json.dumps({
-                "success": False,
-                "error": error_msg
-            }))
+            error_response = ConnectResponse(
+                status=ConnectResponseStatus.ERROR,
+                server=server_name,
+                error=f"Failed to connect to server: {str(e)}"
+            )
+            
+            final_text.append(f"[Server management] Error: {error_response.error}")
+            self._update_message_history(messages, tool_call, error_response.model_dump_json())
             
             # Track the error
             Traceloop.set_association_properties({
@@ -346,11 +355,18 @@ class ServerManagementHandler:
     @task(name="list_connected_servers")
     async def _handle_list_connected_servers(
         self,
-        tool_call: Any,
-        messages: List[Dict[str, Any]],
+        tool_call: ToolCall,
+        messages: List[Message],
         final_text: List[str]
     ) -> None:
-        """Handle list_connected_servers tool"""
+        """
+        Handle list_connected_servers tool
+        
+        Args:
+            tool_call: Validated tool call
+            messages: Conversation history
+            final_text: List to append text to
+        """
         connected_servers = self.server_manager.get_connected_servers()
         
         # Track connected servers
@@ -387,94 +403,54 @@ class ServerManagementHandler:
         # Update message history
         self._update_message_history(messages, tool_call, json.dumps(result))
     
-    def get_connected_servers_as_models(self) -> List[ServerInfo]:
-        """Get connected servers as ServerInfo models"""
-        try:
-            server_models = []
-            connected_servers = self.server_manager.get_connected_servers()
-            
-            for server_name, server_info in connected_servers.items():
-                tool_names = [tool["function"]["name"] for tool in server_info.get("tools", [])]
-                server_models.append(ServerInfo(
-                    name=server_name,
-                    connected=True,
-                    status="connected",
-                    tools=tool_names
-                ))
-            return server_models
-        except Exception as e:
-            logger.error(f"Error getting connected server models: {e}")
-            return []
-    
     def _update_message_history(
         self,
-        messages: List[Dict[str, Any]],
-        tool_call: Any,
+        messages: List[Message],
+        tool_call: ToolCall,
         result_text: str
     ) -> None:
-        """Helper method to update message history"""
-        # Extract tool information
-        tool_name, tool_args, tool_id = self._extract_tool_info(tool_call)
-            
-        # Add assistant message with tool call
-        tool_call_message = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": tool_id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": tool_args
-                    }
-                }
-            ]
-        }
-        messages.append(tool_call_message)
+        """
+        Update message history with tool call and result
         
-        # Add tool response message
-        tool_response_message = {
-            "role": "tool", 
-            "tool_call_id": tool_id,
-            "content": result_text
-        }
-        messages.append(tool_response_message)
-    
-    def _update_message_history_with_models(
-        self,
-        messages: List[Dict[str, Any]],
-        tool_call: Any,
-        result_text: str
-    ) -> None:
-        """Update message history using Pydantic models"""
+        Args:
+            messages: Conversation history
+            tool_call: Tool call model
+            result_text: Result of tool execution
+        """
         try:
-            # Extract tool information and create models
-            tool_call_model = self.as_tool_call_model(tool_call)
-            if not tool_call_model:
-                # Fall back to standard update if model creation fails
-                self._update_message_history(messages, tool_call, result_text)
-                return
-                
             # Create assistant message with tool call
-            assistant_message = Message(
-                role="assistant",
-                content=None,
-                tool_calls=[tool_call_model]
-            )
+            assistant_message = Message.assistant(tool_calls=[tool_call])
             
             # Create tool response message
-            tool_response = Message(
-                role="tool",
-                tool_call_id=tool_call_model.id,
-                content=result_text
-            )
+            tool_message = Message.tool(tool_call_id=tool_call.id, content=result_text)
             
-            # Add to messages in OpenAI format
-            messages.append(assistant_message.to_openai_format())
-            messages.append(tool_response.to_openai_format())
+            # Add messages to history
+            messages.append(assistant_message)
+            messages.append(tool_message)
             
         except Exception as e:
-            logger.error(f"Error updating message history with models: {e}")
-            # Fall back to standard update
-            self._update_message_history(messages, tool_call, result_text)
+            logger.error(f"Error updating message history: {e}")
+            # Fall back to creating dictionaries directly
+            tool_call_message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.tool_name,
+                            "arguments": json.dumps(tool_call.arguments)
+                        }
+                    }
+                ]
+            }
+            
+            tool_response_message = {
+                "role": "tool", 
+                "tool_call_id": tool_call.id,
+                "content": result_text
+            }
+            
+            messages.append(tool_call_message)
+            messages.append(tool_response_message)
