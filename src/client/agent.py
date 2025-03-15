@@ -13,6 +13,7 @@ import uuid
 from traceloop.sdk.decorators import workflow, task
 from traceloop.sdk import Traceloop
 
+from src.utils.decorators import message_processing, server_connection, resource_cleanup
 from .server_registry import ServerRegistry
 from .conversation import Conversation
 from .tool_processor import ToolExecutor
@@ -51,7 +52,7 @@ class Agent:
         
         logger.info("Agent initialized with model: %s", model)
         
-    @workflow(name="connect_server_by_script")
+    @server_connection
     async def connect_to_server(self, server_script_path: str) -> str:
         """
         Connect to an MCP server using a script path
@@ -65,43 +66,20 @@ class Agent:
         Raises:
             ValueError: If the script is invalid
         """
-        # Generate a unique identifier for this server connection
-        connection_id = hashlib.md5(server_script_path.encode()).hexdigest()[:8]
-        
-        # Set association properties for this connection
-        Traceloop.set_association_properties({
-            "connection_id": connection_id,
-            "server_script_path": server_script_path,
-            "connection_type": "script"
-        })
-        
         logger.info(f"Connecting to server using script path: {server_script_path}")
         
         try:
             # Delegate to server manager
             server_name = await self.server_manager.connect_to_server(server_script_path)
             
-            # Track successful connection
-            Traceloop.set_association_properties({
-                "connection_status": "success",
-                "server_name": server_name
-            })
-            
             logger.info(f"Successfully connected to server: {server_name}")
             return server_name
             
         except Exception as e:
-            # Track failed connection
-            Traceloop.set_association_properties({
-                "connection_status": "error",
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            })
-            
             logger.error(f"Failed to connect to server: {str(e)}")
             raise
             
-    @workflow(name="connect_server_configured")
+    @server_connection
     async def connect_to_configured_server(self, server_name: str) -> Dict[str, Any]:
         """
         Connect to an MCP server defined in configuration
@@ -115,46 +93,20 @@ class Agent:
         Raises:
             ValueError: If the server configuration is invalid
         """
-        # Generate a unique identifier for this server connection
-        connection_id = f"{server_name}-{uuid.uuid4().hex[:6]}"
-        
-        # Set association properties for this connection
-        Traceloop.set_association_properties({
-            "connection_id": connection_id,
-            "server_name": server_name,
-            "connection_type": "configured"
-        })
-        
         logger.info(f"Connecting to configured server: {server_name}")
         
         try:
             # Delegate to server manager
             result = await self.server_manager.connect_to_configured_server(server_name)
             
-            # Track connection result
-            status = result.get("status", "unknown")
-            tool_count = len(result.get("tools", []))
-            
-            Traceloop.set_association_properties({
-                "connection_status": status,
-                "tool_count": tool_count
-            })
-            
-            logger.info(f"Connection to {server_name} status: {status}")
+            logger.info(f"Connection to {server_name} status: {result.get('status', 'unknown')}")
             return result
             
         except Exception as e:
-            # Track failed connection
-            Traceloop.set_association_properties({
-                "connection_status": "error",
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            })
-            
             logger.error(f"Failed to connect to configured server {server_name}: {str(e)}")
             raise
 
-    @workflow(name="process_user_query")
+    @message_processing
     async def process_query(self, query: str) -> str:
         """
         Process a user query using the LLM and available tools
@@ -165,39 +117,15 @@ class Agent:
         Returns:
             Generated response
         """
-        # Generate a query ID for tracing
-        query_id = hashlib.md5(query.encode()).hexdigest()[:12]
-        
-        # Set association properties for this query
-        Traceloop.set_association_properties({
-            "query_id": query_id,
-            "query_length": len(query),
-            "query_preview": query[:50] + "..." if len(query) > 50 else query,
-            "server_count": len(self.server_manager.servers)
-        })
-        
         logger.info(f"Processing user query: {query[:50]}{'...' if len(query) > 50 else ''}")
         
         try:
             # Delegate to conversation manager
             response = await self.conversation_manager.process_query(query)
             
-            # Track successful query processing
-            Traceloop.set_association_properties({
-                "query_status": "success",
-                "response_length": len(response)
-            })
-            
             return response
             
         except Exception as e:
-            # Track failed query processing
-            Traceloop.set_association_properties({
-                "query_status": "error",
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            })
-            
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise
     
@@ -321,19 +249,8 @@ class Agent:
         """
         return await self.server_manager.get_available_configured_servers()
     
-    @task(name="cleanup_client")
+    @resource_cleanup
     async def cleanup(self) -> None:
         """Clean up resources"""
-        # Track cleanup operation
-        Traceloop.set_association_properties({
-            "cleanup": "started",
-            "servers_count": len(self.server_manager.servers)
-        })
-        
         logger.info("Cleaning up resources")
         await self.server_manager.cleanup()
-        
-        # Track cleanup completion
-        Traceloop.set_association_properties({
-            "cleanup": "completed"
-        })

@@ -2,8 +2,10 @@ from typing import Dict, List, Any
 from datetime import datetime
 
 from mcp import ClientSession
-from traceloop.sdk.decorators import workflow, task, tool
+from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
+
+from src.utils.decorators import server_connection, tool_execution
 
 class ServerInstance:
     """Manages the connection to a single MCP server"""
@@ -14,15 +16,9 @@ class ServerInstance:
         self.tools = []
         self.connected_at = datetime.now()
         
-    @workflow(name="initialize_server")
+    @server_connection
     async def initialize(self) -> None:
         """Initialize the connection and fetch tools"""
-        # Set association properties for the initialization
-        Traceloop.set_association_properties({
-            "server_name": self.server_name,
-            "connection_timestamp": self.connected_at.isoformat()
-        })
-        
         await self.refresh_tools()
         
     @task(name="refresh_tools")
@@ -45,7 +41,7 @@ class ServerInstance:
         
         return self.tools
         
-    @tool(name="execute_server_tool")
+    @tool_execution
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """
         Execute a tool on this server
@@ -57,40 +53,11 @@ class ServerInstance:
         Returns:
             Tool execution result
         """
-        # Track the tool execution
-        Traceloop.set_association_properties({
-            "server_name": self.server_name,
-            "tool_name": tool_name,
-            "arguments": str(arguments)
-        })
-        
         try:
             result = await self.session.call_tool(tool_name, arguments)
-            
-            # Track successful execution
-            if hasattr(result, 'content'):
-                content_type = type(result.content).__name__
-                content_sample = str(result.content)[:100] + "..." if len(str(result.content)) > 100 else str(result.content)
-            else:
-                content_type = type(result).__name__
-                content_sample = str(result)[:100] + "..." if len(str(result)) > 100 else str(result)
-                
-            Traceloop.set_association_properties({
-                "execution_status": "success",
-                "result_type": content_type,
-                "result_sample": content_sample
-            })
-            
             return result
             
         except Exception as e:
-            # Track failed execution
-            Traceloop.set_association_properties({
-                "execution_status": "error",
-                "error_type": type(e).__name__,
-                "error_message": str(e)[:200]  # Truncate long error messages
-            })
-            
             # Re-raise the exception for proper error handling
             raise
         

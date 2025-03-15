@@ -11,11 +11,12 @@ from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from traceloop.sdk.decorators import workflow, task
+from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
 
 from .server_config import ServerConfig
 from .server_instance import ServerInstance
+from src.utils.decorators import server_connection, resource_cleanup
 
 logger = logging.getLogger("ServerRegistry")
 
@@ -76,18 +77,13 @@ class ServerRegistry:
             return server.get_openai_format_tools()
         return []
         
-    @task(name="cleanup_servers")
+    @resource_cleanup
     async def cleanup(self) -> None:
         """Clean up resources"""
         logger.info("Cleaning up server connections")
-        # Track the servers being cleaned up
-        Traceloop.set_association_properties({
-            "servers_count": len(self.servers),
-            "server_names": ",".join(list(self.servers.keys()))
-        })
         await self.exit_stack.aclose()
     
-    @workflow(name="connect_to_server")
+    @server_connection
     async def connect_to_server(self, server_script_path: str) -> str:
         """
         Connect to an MCP server using a script path
@@ -101,12 +97,6 @@ class ServerRegistry:
         Raises:
             ValueError: If the script is invalid
         """
-        # Add association properties for tracing
-        Traceloop.set_association_properties({
-            "server_script_path": server_script_path,
-            "connection_type": "script"
-        })
-        
         logger.info(f"Connecting to server with script: {server_script_path}")
         
         # Validate script file extension and get command
@@ -126,7 +116,7 @@ class ServerRegistry:
         logger.info(f"Connected to server {server_name} with tools: {server.get_tool_names()}")
         return server_name
 
-    @workflow(name="connect_to_configured_server")
+    @server_connection
     async def connect_to_configured_server(self, server_name: str) -> Dict[str, Any]:
         """
         Connect to an MCP server defined in configuration
@@ -140,24 +130,12 @@ class ServerRegistry:
         Raises:
             ValueError: If the server configuration is invalid
         """
-        # Add association properties for tracing
-        Traceloop.set_association_properties({
-            "server_name": server_name,
-            "connection_type": "configured"
-        })
-        
         logger.info(f"Connecting to configured server: {server_name}")
         
         # Check if already connected
         if server_name in self.servers:
             logger.info(f"Server {server_name} is already connected")
             tools = self.servers[server_name].get_tool_names()
-            
-            # Track this as a reconnection attempt
-            Traceloop.set_association_properties({
-                "connection_result": "already_connected",
-                "tools_count": len(tools)
-            })
             
             return {
                 "status": "already_connected",
@@ -185,12 +163,6 @@ class ServerRegistry:
             tool_names = server.get_tool_names()
             logger.info(f"Connected to server {server_name} with tools: {tool_names}")
             
-            # Track successful connection
-            Traceloop.set_association_properties({
-                "connection_result": "connected",
-                "tools_count": len(tool_names)
-            })
-            
             return {
                 "status": "connected",
                 "server": server_name,
@@ -201,12 +173,6 @@ class ServerRegistry:
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Failed to connect to configured server {server_name}: {error_msg}", exc_info=True)
-            
-            # Track connection failure
-            Traceloop.set_association_properties({
-                "connection_result": "error",
-                "error_message": error_msg[:200]  # Truncate long error messages
-            })
             
             return {
                 "status": "error",

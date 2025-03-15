@@ -24,7 +24,7 @@ from simple_agent import SimpleAgent
 
 # Setup tracing
 from traceloop.sdk import Traceloop
-from traceloop.sdk.decorators import workflow, task, agent
+from src.utils.decorators import workflow, server_connection
 
 # Load environment variables
 load_dotenv()
@@ -38,7 +38,7 @@ Traceloop.init(
 # Setup logging
 logger = setup_logging()
 
-@workflow(name="agent_runner_workflow")
+@workflow
 async def main():
     """Main entry point for the SimpleAgent runner"""
     # Generate a unique session ID
@@ -118,26 +118,7 @@ async def main():
             "server_name": "main-server"
         })
         
-        result = await client.connect_to_configured_server("main-server")
-        
-        if not result or result.get("status") not in ["connected", "already_connected"]:
-            logger.error("Failed to connect to main server")
-            
-            # Track connection failure
-            Traceloop.set_association_properties({
-                "connection_stage": "failed",
-                "connection_error": "server_connection_failed"
-            })
-            
-            return
-            
-        # Track successful connection
-        Traceloop.set_association_properties({
-            "connection_stage": "connected",
-            "tool_count": len(result.get("tools", []))
-        })
-        
-        logger.info("Successfully connected to main server")
+        await connect_to_main_server(client)
         
         # Create agent configuration
         agent_config = {
@@ -238,6 +219,31 @@ async def main():
         })
         
         logger.info(f"Agent runner completed in {session_duration:.2f} seconds")
+
+@server_connection
+async def connect_to_main_server(client):
+    """Connect to the main server"""
+    result = await client.connect_to_configured_server("main-server")
+    
+    if not result or result.get("status") not in ["connected", "already_connected"]:
+        logger.error("Failed to connect to main server")
+        
+        # Track connection failure
+        Traceloop.set_association_properties({
+            "connection_stage": "failed",
+            "connection_error": "server_connection_failed"
+        })
+        
+        raise RuntimeError("Failed to connect to main server")
+        
+    # Track successful connection
+    Traceloop.set_association_properties({
+        "connection_stage": "connected",
+        "tool_count": len(result.get("tools", []))
+    })
+    
+    logger.info("Successfully connected to main server")
+    return result
 
 if __name__ == "__main__":
     asyncio.run(main())

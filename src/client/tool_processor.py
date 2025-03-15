@@ -8,10 +8,10 @@ from typing import Dict, List, Optional, Any
 import hashlib
 import uuid
 
-from traceloop.sdk.decorators import workflow, task, tool
+from traceloop.sdk.decorators import task
 from traceloop.sdk import Traceloop
-from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
+from src.utils.decorators import tool_execution
 from .server_registry import ServerRegistry
 
 logger = logging.getLogger("ToolExecutor")
@@ -88,7 +88,7 @@ class ToolExecutor:
         
         return None
     
-    @tool(name="execute_tool")
+    @tool_execution
     async def execute_tool(
         self,
         tool_name: str,
@@ -109,73 +109,18 @@ class ToolExecutor:
         Raises:
             ValueError: If the server is not found
         """
-        # Generate a unique ID for this tool execution
-        execution_id = hashlib.md5(f"{server_name}:{tool_name}:{str(tool_args)}".encode()).hexdigest()[:12]
-        
-        # Associate this tool execution with detailed context for tracing
-        Traceloop.set_association_properties({
-            "execution_id": execution_id,
-            "tool_name": tool_name,
-            "server_name": server_name,
-            "args_count": len(tool_args) if tool_args else 0,
-            "args_keys": ",".join(tool_args.keys()) if tool_args else ""
-        })
-        
         server = self.server_manager.get_server(server_name)
         if not server:
-            # Track server not found error
-            Traceloop.set_association_properties({
-                "execution_status": "error",
-                "error_type": "server_not_found"
-            })
             raise ValueError(f"Server '{server_name}' not found")
         
         logger.info(f"Executing tool '{tool_name}' on server '{server_name}'")
         
         try:
-            # Track execution start
-            Traceloop.set_association_properties({
-                "execution_status": "started",
-                "start_time": str(uuid.uuid1().time)  # Using uuid1 time as a simple timestamp
-            })
-            
             # Execute the tool
             result = await server.execute_tool(tool_name, tool_args)
-            
-            # Process and track result metadata
-            if hasattr(result, 'content'):
-                if isinstance(result.content, list):
-                    content_length = sum(len(str(item)) for item in result.content)
-                    content_type = "list"
-                elif isinstance(result.content, str):
-                    content_length = len(result.content)
-                    content_type = "string"
-                else:
-                    content_length = len(str(result.content))
-                    content_type = type(result.content).__name__
-            else:
-                content_length = len(str(result))
-                content_type = type(result).__name__
-            
-            # Track successful execution
-            Traceloop.set_association_properties({
-                "execution_status": "success",
-                "end_time": str(uuid.uuid1().time),
-                "result_type": content_type,
-                "result_length": content_length
-            })
-            
             return result
             
         except Exception as e:
-            # Track failed execution
-            Traceloop.set_association_properties({
-                "execution_status": "error",
-                "end_time": str(uuid.uuid1().time),
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            })
-            
             logger.error(f"Error executing tool '{tool_name}' on server '{server_name}': {str(e)}", exc_info=True)
             raise
     
