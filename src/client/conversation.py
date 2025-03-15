@@ -13,6 +13,7 @@ from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 from .llm_service import LLMService
 from .server_registry import ServerRegistry
 from .tool_processor import ToolExecutor
+from src.utils.decorators import async_tool_error_handler
 
 logger = logging.getLogger("Conversation")
 
@@ -299,6 +300,7 @@ class Conversation:
         )
     
     @task(name="execute_and_process_tool")
+    @async_tool_error_handler  # Added decorator for standardized error handling
     async def _execute_and_process_tool(
         self,
         server_name: str,
@@ -321,58 +323,34 @@ class Conversation:
         tool_args_raw = tool_call.function.arguments
         final_text.append(f"[Calling tool {tool_name} from {server_name} server with args {tool_args_raw}]")
         
-        try:
-            # Parse arguments
-            tool_args = json.loads(tool_args_raw)
-            
-            # Track the tool arguments
-            Traceloop.set_association_properties({
-                "args_count": len(tool_args),
-                "args_keys": ",".join(tool_args.keys())
-            })
-            
-            # Execute the tool
-            result = await self.tool_processor.execute_tool(tool_name, tool_args, server_name)
-            
-            # Process result into text
-            result_text = self.tool_processor.extract_result_text(result)
-            if result_text:
-                final_text.append(f"Tool result: {result_text}")
-            
-            # Track the result
-            Traceloop.set_association_properties({
-                "result_length": len(result_text) if result_text else 0,
-                "execution_status": "success"
-            })
-            
-            # Update message history
-            self._update_message_history(messages, tool_call, result_text)
-            
-            # Get follow-up response
-            await self._get_follow_up_response(messages, tools, final_text)
-            
-        except json.JSONDecodeError as e:
-            error_msg = f"Error parsing tool arguments: {str(e)}"
-            logger.error(error_msg)
-            final_text.append(error_msg)
-            
-            # Track the error
-            Traceloop.set_association_properties({
-                "error": "json_decode",
-                "error_message": str(e)
-            })
-            
-        except Exception as e:
-            error_msg = f"Error executing tool on {server_name} server: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            final_text.append(error_msg)
-            
-            # Track the error
-            Traceloop.set_association_properties({
-                "error": "execution_failed",
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            })
+        # Parse arguments - This can raise JSONDecodeError which will be handled by the decorator
+        tool_args = json.loads(tool_args_raw)
+        
+        # Track the tool arguments
+        Traceloop.set_association_properties({
+            "args_count": len(tool_args),
+            "args_keys": ",".join(tool_args.keys())
+        })
+        
+        # Execute the tool - This can raise exceptions which will be handled by the decorator
+        result = await self.tool_processor.execute_tool(tool_name, tool_args, server_name)
+        
+        # Process result into text
+        result_text = self.tool_processor.extract_result_text(result)
+        if result_text:
+            final_text.append(f"Tool result: {result_text}")
+        
+        # Track the result
+        Traceloop.set_association_properties({
+            "result_length": len(result_text) if result_text else 0,
+            "execution_status": "success"
+        })
+        
+        # Update message history
+        self._update_message_history(messages, tool_call, result_text)
+        
+        # Get follow-up response
+        await self._get_follow_up_response(messages, tools, final_text)
     
     def _update_message_history(
         self,
@@ -627,6 +605,7 @@ class Conversation:
         self._update_message_history(messages, tool_call, json.dumps(result))
 
     @task(name="connect_to_server")
+    @async_tool_error_handler  # Added decorator for error handling
     async def _handle_connect_to_server(
         self,
         tool_call: Any,
@@ -668,43 +647,27 @@ class Conversation:
             })
             return
         
-        # Connect to the server
-        try:
-            connection_result = await self.server_manager.connect_to_configured_server(server_name)
-            result_text = f"Successfully connected to server: {server_name}"
-            final_text.append(f"[Server management] {result_text}")
-            
-            # Track successful connection
-            Traceloop.set_association_properties({
-                "connection_status": "success",
-                "tool_count": len(connection_result.get("tools", []))
-            })
-            
-            # Update message history
-            self._update_message_history(messages, tool_call, json.dumps({
-                "success": True,
-                "server_name": server_name,
-                "message": result_text
-            }))
-            
-            # Get follow-up response with updated tools
-            updated_tools = self.server_manager.collect_all_tools() + self.server_management_tools
-            await self._get_follow_up_response(messages, updated_tools, final_text)
-            
-        except Exception as e:
-            error_msg = f"Failed to connect to server '{server_name}': {str(e)}"
-            final_text.append(f"[Server management] Error: {error_msg}")
-            self._update_message_history(messages, tool_call, json.dumps({
-                "success": False,
-                "error": error_msg
-            }))
-            
-            # Track the error
-            Traceloop.set_association_properties({
-                "connection_status": "error",
-                "error_type": type(e).__name__,
-                "error_message": str(e)
-            })
+        # Connect to the server - potential errors will be handled by the decorator
+        connection_result = await self.server_manager.connect_to_configured_server(server_name)
+        result_text = f"Successfully connected to server: {server_name}"
+        final_text.append(f"[Server management] {result_text}")
+        
+        # Track successful connection
+        Traceloop.set_association_properties({
+            "connection_status": "success",
+            "tool_count": len(connection_result.get("tools", []))
+        })
+        
+        # Update message history
+        self._update_message_history(messages, tool_call, json.dumps({
+            "success": True,
+            "server_name": server_name,
+            "message": result_text
+        }))
+        
+        # Get follow-up response with updated tools
+        updated_tools = self.server_manager.collect_all_tools() + self.server_management_tools
+        await self._get_follow_up_response(messages, updated_tools, final_text)
 
     @task(name="list_connected_servers")
     async def _handle_list_connected_servers(
