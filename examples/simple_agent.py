@@ -5,10 +5,16 @@ This module provides a lightweight agent that can analyze code and documentation
 planning its own approach to solving tasks.
 """
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.client.llm_service import LLMService
+from src.client.server_registry import ServerRegistry
+from src.client.tool_processor import ToolExecutor 
+
 import logging
 import json
 import re
-import asyncio
 import time
 from typing import Dict, List, Any, Optional
 import uuid
@@ -18,9 +24,6 @@ from traceloop.sdk.decorators import workflow, task, agent, tool
 from traceloop.sdk import Traceloop
 from traceloop.sdk.tracing.manual import track_llm_call, LLMMessage
 
-from src.client.llm_service import LLMService
-from src.client.server_registry import ServerRegistry
-from src.client.tool_processor import ToolExecutor
 
 logger = logging.getLogger("SimpleAgent")
 
@@ -58,7 +61,7 @@ class SimpleAgent:
         self.conversation_history = []
         
         # Set default configuration
-        self.config.setdefault("model", "google/gemini-2.0-pro")
+        self.config.setdefault("model", "google/gemini-2.0-flash-001")
         self.config.setdefault("temperature", 0.7)
         self.config.setdefault("max_tokens", 2048)
         

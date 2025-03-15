@@ -16,6 +16,11 @@ import hashlib
 # Add the project root directory to Python path to enable imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.client.agent import Agent
+
 from dotenv import load_dotenv
 from src.utils.logger_setup import setup_logging
 from src.client.agent import Agent

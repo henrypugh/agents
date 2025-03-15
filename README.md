@@ -38,44 +38,59 @@ The project follows a modular architecture organized around these core component
    - Maintains the chat loop and handles user interactions
    - Exposes public API for connecting to servers and processing queries
 
-3. **Conversation (`src/client/conversation.py`)**
+3. **Conversation (`src/client/conversation/conversation.py`)**
    - Manages LLM interaction and conversation flow
    - Processes queries through the LLM
-   - Handles tool calls and results processing
-   - Contains server management tools logic
+   - Delegates to specialized handlers for different aspects of conversation
+   - Coordinates message processing, response handling, and server management
 
-4. **ServerRegistry (`src/client/server_registry.py`)**
+4. **MessageProcessor (`src/client/conversation/message_processor.py`)**
+   - Handles message formatting and LLM interactions
+   - Manages conversation history and context
+   - Runs the core conversation loop with the LLM
+
+5. **ResponseProcessor (`src/client/conversation/response_processor.py`)**
+   - Processes LLM responses and handle tool execution
+   - Routes tool calls to appropriate handlers
+   - Manages follow-up responses after tool execution
+
+6. **ServerManagementHandler (`src/client/conversation/server_management.py`)**
+   - Handles server-related tools and operations
+   - Creates server management tools for LLM use
+   - Processes server connection and discovery requests
+
+7. **ServerRegistry (`src/client/server_registry.py`)**
    - Manages creation and lifecycle of server connections
    - Stores server connection instances
    - Handles discovery of available servers
    - Collects tools from all connected servers
 
-5. **ToolExecutor (`src/client/tool_processor.py`)**
+8. **ToolExecutor (`src/client/tool_processor.py`)**
    - Processes tool calls from the LLM
    - Routes tools to appropriate servers
    - Handles tool execution and error handling
 
-6. **ServerInstance (`src/client/server_instance.py`)**
+9. **ServerInstance (`src/client/server_instance.py`)**
    - Encapsulates connection to individual MCP servers
    - Handles initialization and tool discovery
    - Executes tool calls on specific servers
 
-7. **LLMService (`src/client/llm_service.py`)**
-   - Handles communication with the OpenRouter API
-   - Formats messages and tools for the LLM
-   - Processes LLM responses
+10. **LLMService (`src/client/llm_service.py`)**
+    - Handles communication with the OpenRouter API
+    - Formats messages and tools for the LLM
+    - Processes LLM responses
 
-8. **ServerConfig (`src/client/server_config.py`)**
-   - Manages server configurations and environment variables
-   - Handles loading and parsing of server configuration files
-   - Processes environment variables for server connections
+11. **ServerConfig (`src/client/server_config.py`)**
+    - Manages server configurations and environment variables
+    - Handles loading and parsing of server configuration files
+    - Processes environment variables for server connections
 
-9. **SimpleAgent (`simple_agent.py`)**
-   - Self-directed agent for code analysis tasks
-   - Creates and executes plans using available tools
-   - Generates recommendations based on findings
+12. **SimpleAgent (`simple_agent.py`)**
+    - Self-directed agent for code analysis tasks
+    - Creates and executes plans using available tools
+    - Generates recommendations based on findings
 
-10. **Agent Runner (`agent_runner.py`)**
+13. **Agent Runner (`agent_runner.py`)**
     - Runner script for SimpleAgent
     - Initializes and runs the SimpleAgent for code analysis tasks
     - Processes command line arguments and task inputs
@@ -87,7 +102,7 @@ The project follows a modular architecture organized around these core component
 - Implemented basic functionality for connecting to MCP servers
 - Added LLM integration with OpenRouter
 
-### First Refactoring (Previous)
+### First Refactoring
 - Split monolithic design into specialized components
 - Introduced `ServerRegistry` to handle server connection lifecycle
 - Created `Conversation` to handle LLM interaction
@@ -95,13 +110,22 @@ The project follows a modular architecture organized around these core component
 - Separated `ServerInstance` to encapsulate individual server connections
 - Updated `Agent` to orchestrate these components
 
-### Second Refactoring (Current)
+### Second Refactoring
 - Renamed components for clarity and consistency
 - Added `ServerConfig` for better configuration management
 - Implemented `SimpleAgent` for self-directed code analysis tasks
 - Added observability with Traceloop integration
 - Improved error handling and recovery mechanisms
 - Enhanced tool execution flow
+
+### Third Refactoring
+- Decomposed `Conversation` into specialized subcomponents
+- Created `MessageProcessor` for handling message formatting and LLM interactions
+- Added `ResponseProcessor` for processing LLM responses and tool execution
+- Implemented `ServerManagementHandler` for server-related operations
+- Enhanced tracing and observability throughout the codebase
+- Added resource cleanup decorators for better resource management
+- Improved server connection handling with better error recovery
 
 ### Key Design Decisions
 
@@ -124,6 +148,7 @@ The project follows a modular architecture organized around these core component
    - Exception handling at appropriate levels
    - Lower-level components propagate errors
    - Higher-level components handle display and recovery
+   - Decorators for consistent error handling patterns
 
 5. **Configuration Management**
    - Server configurations stored in external JSON
@@ -134,6 +159,13 @@ The project follows a modular architecture organized around these core component
    - Traceloop integration for tracing and monitoring
    - Consistent logging throughout the codebase
    - Detailed metrics on operations and performance
+   - Association properties for context tracking
+
+7. **Resource Management**
+   - AsyncExitStack for managing async resources
+   - Resource cleanup decorators for consistent cleanup
+   - Server-specific resource management
+   - Proper cleanup on application exit
 
 ## Component Breakdown
 
@@ -151,6 +183,52 @@ The project follows a modular architecture organized around these core component
   - `chat_loop()`: Run interactive chat loop
   - `cleanup()`: Clean up resources
 
+### Conversation
+- **Purpose**: Manage LLM conversations
+- **Responsibilities**:
+  - Coordinate message processing and response handling
+  - Delegate to specialized handlers
+  - Process queries through LLM
+  - Manage server tools and tool execution
+- **Key Methods**:
+  - `process_query()`: Process user query
+  - `_initialize_components()`: Set up conversation components
+  - `_collect_tools()`: Collect tools from servers and add server management tools
+
+### MessageProcessor
+- **Purpose**: Handle message formatting and LLM interactions
+- **Responsibilities**:
+  - Format messages for LLM
+  - Run conversation with LLM
+  - Update message history
+- **Key Methods**:
+  - `run_conversation()`: Run conversation with LLM
+  - `update_message_history()`: Update conversation history
+  - `format_messages()`: Format messages for LLM
+
+### ResponseProcessor
+- **Purpose**: Process LLM responses and handle tool execution
+- **Responsibilities**:
+  - Process LLM responses
+  - Handle tool calls
+  - Get follow-up responses
+- **Key Methods**:
+  - `process_response()`: Process LLM response
+  - `process_tool_call()`: Process tool call from LLM
+  - `get_follow_up_response()`: Get follow-up response after tool execution
+
+### ServerManagementHandler
+- **Purpose**: Handle server-related tools and operations
+- **Responsibilities**:
+  - Create server management tools
+  - Handle server connection requests
+  - Process server discovery requests
+- **Key Methods**:
+  - `create_server_management_tools()`: Create server management tools
+  - `handle_server_management_tool()`: Handle server management tool calls
+  - `_handle_list_available_servers()`: Handle list_available_servers tool
+  - `_handle_connect_to_server()`: Handle connect_to_server tool
+
 ### ServerRegistry
 - **Purpose**: Manage server connections
 - **Responsibilities**:
@@ -161,26 +239,12 @@ The project follows a modular architecture organized around these core component
 - **Key Methods**:
   - `connect_to_server()`: Connect to server by script path
   - `connect_to_configured_server()`: Connect to configured server
+  - `disconnect_server()`: Disconnect from a server
   - `get_server()`: Get server connection by name
   - `collect_all_tools()`: Collect tools from all servers
   - `get_connected_servers()`: Get info about connected servers
   - `get_available_servers()`: Get all available servers
   - `cleanup()`: Clean up server connections
-
-### Conversation
-- **Purpose**: Manage LLM conversations
-- **Responsibilities**:
-  - Process queries through LLM
-  - Handle tool calls
-  - Update conversation history
-  - Process server management tools
-- **Key Methods**:
-  - `process_query()`: Process user query
-  - `_run_conversation()`: Run conversation with LLM
-  - `_process_response()`: Process LLM response
-  - `_process_tool_call()`: Process tool call from LLM
-  - `_handle_server_management_tool()`: Handle server management tools
-  - `_get_follow_up_response()`: Get follow-up response after tool execution
 
 ### ToolExecutor
 - **Purpose**: Process tool calls
@@ -192,6 +256,7 @@ The project follows a modular architecture organized around these core component
   - `find_server_for_tool()`: Find server for tool
   - `execute_tool()`: Execute tool on server
   - `extract_result_text()`: Extract text from tool result
+  - `process_external_tool()`: Process external tool call
 
 ### ServerInstance
 - **Purpose**: Encapsulate connection to MCP server
@@ -206,6 +271,7 @@ The project follows a modular architecture organized around these core component
   - `execute_tool()`: Execute tool on server
   - `get_tool_names()`: Get list of tool names
   - `get_openai_format_tools()`: Get tools in OpenAI format
+  - `cleanup()`: Clean up server resources
 
 ### LLMService
 - **Purpose**: Communicate with LLM API
@@ -238,6 +304,30 @@ The project follows a modular architecture organized around these core component
   - `_create_plan()`: Create a plan for a task
   - `_execute_plan()`: Execute the created plan
   - `_generate_recommendations()`: Generate recommendations from results
+
+### Agent Runner
+- **Purpose**: Run SimpleAgent for code analysis tasks
+- **Responsibilities**:
+  - Initialize and run SimpleAgent
+  - Process command line arguments and task inputs
+- **Key Methods**:
+  - `run()`: Run SimpleAgent
+
+## Examples
+
+The project includes example implementations in the `examples/` directory:
+
+1. **SimpleAgent (`examples/simple_agent.py`)**
+   - Self-directed agent for code analysis tasks
+   - Creates and executes plans using available tools
+   - Generates recommendations based on findings
+
+2. **Agent Runner (`examples/agent_runner.py`)**
+   - Runner script for SimpleAgent
+   - Initializes and runs the SimpleAgent for code analysis tasks
+   - Processes command line arguments and task inputs
+
+These examples demonstrate how to build specialized agents using the core MCP Client components. See the README in the examples directory for more details on running and creating examples.
 
 ## Developer Cheatsheet
 
@@ -343,7 +433,7 @@ The dynamic server connection is a core feature that allows the LLM to discover 
 ### Implementation Details
 
 1. **Server Management Tools**
-   - The `Conversation` adds special server management tools to the LLM
+   - The `ServerManagementHandler` creates special server management tools for the LLM
    - These tools allow the LLM to list, connect to, and use servers
 
 2. **Server Discovery**
@@ -364,6 +454,12 @@ The dynamic server connection is a core feature that allows the LLM to discover 
    - Connections are maintained throughout the session
    - The `AsyncExitStack` in `ServerRegistry` ensures proper cleanup
    - Connections can be manually disconnected or automatically closed on exit
+   - The `disconnect_server` method allows for explicit disconnection
+
+5. **Server Connector Tools**
+   - The `server_connector.py` module provides tools for connecting to external servers
+   - These tools allow for dynamic connection to servers from within a server
+   - Enables nested server connections for complex workflows
 
 ### Critical Implementation Notes
 
@@ -372,21 +468,24 @@ The dynamic server connection is a core feature that allows the LLM to discover 
 - **Tool Attribution**: Each tool is tagged with its server name for proper routing
 - **Server Connection Reuse**: Existing connections are reused when possible
 - **Connection Cleanup**: All connections must be properly closed on application exit
+- **Resource Management**: Each component manages its own resources with AsyncExitStack
 
 ## Data Flow
 
 ### Query Processing Flow
 
 ```
-User Query -> Agent -> Conversation -> LLMService -> OpenRouter API
+User Query -> Agent -> Conversation -> MessageProcessor -> LLMService -> OpenRouter API
                            ↓
                       LLM Response
+                           ↓
+                     ResponseProcessor
                            ↓
                      Tool Call Needed?
                      /           \
                   No             Yes
                    ↓               ↓
-            Final Response   ToolExecutor
+            Final Response   ToolExecutor/ServerManagementHandler
                                   ↓
                            ServerRegistry
                                   ↓
@@ -406,15 +505,17 @@ User Query -> Agent -> Conversation -> LLMService -> OpenRouter API
 ### Tool Execution Flow
 
 1. LLM generates tool call with name and arguments
-2. `Conversation._process_tool_call()` processes the tool call
-3. `ToolExecutor.find_server_for_tool()` identifies the server for the tool
-4. `ToolExecutor.execute_tool()` executes the tool on the appropriate server
-5. `ServerInstance.execute_tool()` sends the tool call to the MCP server
-6. Server executes the tool and returns the result
-7. `ToolExecutor.extract_result_text()` extracts text from the result
-8. `Conversation._update_message_history()` updates conversation history
-9. `Conversation._get_follow_up_response()` gets follow-up response from LLM
-10. Final response is returned to the user
+2. `ResponseProcessor.process_tool_call()` processes the tool call
+3. If it's a server management tool, `ServerManagementHandler` handles it
+4. Otherwise, `ToolExecutor.process_external_tool()` processes the tool
+5. `ToolExecutor.find_server_for_tool()` identifies the server for the tool
+6. `ToolExecutor.execute_tool()` executes the tool on the appropriate server
+7. `ServerInstance.execute_tool()` sends the tool call to the MCP server
+8. Server executes the tool and returns the result
+9. `ToolExecutor.extract_result_text()` extracts text from the result
+10. `MessageProcessor.update_message_history()` updates conversation history
+11. `ResponseProcessor.get_follow_up_response()` gets follow-up response from LLM
+12. Final response is returned to the user
 
 ### Server Connection Flow
 
@@ -426,12 +527,21 @@ User Query -> Agent -> Conversation -> LLMService -> OpenRouter API
 6. Connection is stored in `ServerRegistry.servers` dictionary
 7. Tools are available for use through `ServerRegistry.collect_all_tools()`
 
+### Server Disconnection Flow
+
+1. `ServerRegistry.disconnect_server()` is called with server name
+2. Server instance is retrieved from registry
+3. `ServerInstance.cleanup()` is called to clean up resources
+4. Server is removed from registry
+5. Status information is returned
+
 ## Implementation Details to Remember
 
 1. **Error Handling in Async Context**
    - Always use `try/except` inside async functions
    - Be careful with async context managers
    - Ensure `AsyncExitStack` is properly closed
+   - Use decorators for consistent error handling
 
 2. **LLM Tool Format**
    - Tools must be formatted in OpenAI function calling format
@@ -468,8 +578,10 @@ User Query -> Agent -> Conversation -> LLMService -> OpenRouter API
    - All server connections must be properly closed
    - AsyncExitStack ensures proper cleanup of async resources
    - Manual resource cleanup may be needed in some error cases
+   - Use resource_cleanup decorator for consistent cleanup
 
 9. **Traceloop Integration**
    - Use Traceloop's decorators for tracing workflows, tasks, and tools
    - Set appropriate association properties for context
    - Use manual tracking for fine-grained control
+   - Track important events and metrics
