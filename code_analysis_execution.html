@@ -1,0 +1,182 @@
+
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Workflow Visualization: CodeAnalysisWorkflow</title>
+            <meta charset="UTF-8">
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    margin: 0;
+                    padding: 0;
+                    background-color: #f9f9f9;
+                }
+                #cy {
+                    width: 100%;
+                    height: 100vh;
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                }
+                .info-panel {
+                    position: absolute;
+                    top: 10px;
+                    right: 10px;
+                    background-color: rgba(255, 255, 255, 0.9);
+                    border: 1px solid #ccc;
+                    border-radius: 5px;
+                    padding: 15px;
+                    z-index: 10;
+                    max-width: 300px;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                }
+                .legend {
+                    margin-top: 15px;
+                    padding-top: 10px;
+                    border-top: 1px solid #ddd;
+                }
+                .legend-item {
+                    margin: 5px 0;
+                    display: flex;
+                    align-items: center;
+                }
+                .legend-color {
+                    width: 15px;
+                    height: 15px;
+                    margin-right: 8px;
+                    border-radius: 3px;
+                }
+                h2 {
+                    margin-top: 0;
+                    color: #333;
+                }
+                h3 {
+                    margin-bottom: 10px;
+                    color: #555;
+                }
+            </style>
+        </head>
+        <body>
+            <div id="cy"></div>
+            <div class="info-panel">
+                <h2>Workflow: CodeAnalysisWorkflow</h2>
+                <p><strong>Steps:</strong> 5</p>
+                <p><strong>Events:</strong> 7</p>
+                <p><em>Drag to move, scroll to zoom</em></p>
+                
+                <div class="legend">
+                    <h3>Legend</h3>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #6FB1FC;"></div>
+                        <div>Step (Rectangle)</div>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #F5A45D;"></div>
+                        <div>Event (Oval)</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Load required libraries -->
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.25.0/cytoscape.min.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape-dagre/2.5.0/cytoscape-dagre.min.js"></script>
+            
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    // Register the dagre layout for directed graphs
+                    cytoscape.use(cytoscapeDagre);
+                    
+                    var cy = cytoscape({
+                        container: document.getElementById('cy'),
+                        elements: {"nodes": [{"data": {"id": "step_create_plan", "label": "create_plan", "type": "step"}}, {"data": {"id": "step_execute_step", "label": "execute_step", "type": "step"}}, {"data": {"id": "step_generate_recommendations", "label": "generate_recommendations", "type": "step"}}, {"data": {"id": "step_process_step_result", "label": "process_step_result", "type": "step"}}, {"data": {"id": "step_start_analysis", "label": "start_analysis", "type": "step"}}, {"data": {"id": "event_PlanningEvent", "label": "PlanningEvent", "type": "event"}}, {"data": {"id": "event_ExecuteStepEvent", "label": "ExecuteStepEvent", "type": "event"}}, {"data": {"id": "event_ErrorEvent", "label": "ErrorEvent", "type": "event"}}, {"data": {"id": "event_StepResultEvent", "label": "StepResultEvent", "type": "event"}}, {"data": {"id": "event_GenerateRecommendationsEvent", "label": "GenerateRecommendationsEvent", "type": "event"}}, {"data": {"id": "event_StopEvent", "label": "StopEvent", "type": "event"}}, {"data": {"id": "event_StartEvent", "label": "StartEvent", "type": "event"}}], "edges": [{"data": {"id": "event_PlanningEvent_to_step_create_plan", "source": "event_PlanningEvent", "target": "step_create_plan", "label": "triggers"}}, {"data": {"id": "step_create_plan_to_event_ExecuteStepEvent", "source": "step_create_plan", "target": "event_ExecuteStepEvent", "label": "produces"}}, {"data": {"id": "step_create_plan_to_event_ErrorEvent", "source": "step_create_plan", "target": "event_ErrorEvent", "label": "produces"}}, {"data": {"id": "event_ExecuteStepEvent_to_step_execute_step", "source": "event_ExecuteStepEvent", "target": "step_execute_step", "label": "triggers"}}, {"data": {"id": "step_execute_step_to_event_StepResultEvent", "source": "step_execute_step", "target": "event_StepResultEvent", "label": "produces"}}, {"data": {"id": "step_execute_step_to_event_ErrorEvent", "source": "step_execute_step", "target": "event_ErrorEvent", "label": "produces"}}, {"data": {"id": "event_GenerateRecommendationsEvent_to_step_generate_recommendations", "source": "event_GenerateRecommendationsEvent", "target": "step_generate_recommendations", "label": "triggers"}}, {"data": {"id": "step_generate_recommendations_to_event_StopEvent", "source": "step_generate_recommendations", "target": "event_StopEvent", "label": "produces"}}, {"data": {"id": "event_StepResultEvent_to_step_process_step_result", "source": "event_StepResultEvent", "target": "step_process_step_result", "label": "triggers"}}, {"data": {"id": "step_process_step_result_to_event_ExecuteStepEvent", "source": "step_process_step_result", "target": "event_ExecuteStepEvent", "label": "produces"}}, {"data": {"id": "step_process_step_result_to_event_GenerateRecommendationsEvent", "source": "step_process_step_result", "target": "event_GenerateRecommendationsEvent", "label": "produces"}}, {"data": {"id": "event_StartEvent_to_step_start_analysis", "source": "event_StartEvent", "target": "step_start_analysis", "label": "triggers"}}, {"data": {"id": "step_start_analysis_to_event_PlanningEvent", "source": "step_start_analysis", "target": "event_PlanningEvent", "label": "produces"}}]},
+                        style: [
+                            {
+                                selector: 'node',
+                                style: {
+                                    'label': 'data(label)',
+                                    'text-valign': 'center',
+                                    'text-halign': 'center',
+                                    'font-size': '14px',
+                                    'width': 'label',
+                                    'height': 'label',
+                                    'padding': '12px',
+                                    'text-wrap': 'wrap',
+                                    'text-max-width': '120px',
+                                    'color': '#333',
+                                    'font-weight': 'bold'
+                                }
+                            },
+                            {
+                                selector: 'node[type="step"]',
+                                style: {
+                                    'background-color': '#6FB1FC',
+                                    'shape': 'rectangle',
+                                    'padding': '15px',
+                                    'border-width': '1px',
+                                    'border-color': '#4A90E2'
+                                }
+                            },
+                            {
+                                selector: 'node[type="event"]',
+                                style: {
+                                    'background-color': '#F5A45D',
+                                    'shape': 'ellipse',
+                                    'border-width': '1px',
+                                    'border-color': '#E67E22'
+                                }
+                            },
+                            {
+                                selector: 'edge',
+                                style: {
+                                    'width': 2,
+                                    'line-color': '#999',
+                                    'target-arrow-color': '#999',
+                                    'target-arrow-shape': 'triangle',
+                                    'curve-style': 'bezier',
+                                    'arrow-scale': 1.2
+                                }
+                            }
+                        ],
+                        layout: {
+                            name: 'dagre',
+                            rankDir: 'LR',  // Left to right layout
+                            padding: 50,
+                            nodeSep: 60,
+                            rankSep: 100,
+                            animate: true,
+                            animationDuration: 500
+                        }
+                    });
+                    
+                    // Center the graph
+                    cy.fit();
+                    cy.center();
+                    
+                    // Add interactivity - nodes highlight on hover
+                    cy.on('mouseover', 'node', function(e) {
+                        var node = e.target;
+                        node.style('border-width', '3px');
+                        
+                        // Highlight connected edges and nodes
+                        var connectedEdges = node.connectedEdges();
+                        connectedEdges.style('line-color', '#2ECC71');
+                        connectedEdges.style('target-arrow-color', '#2ECC71');
+                        connectedEdges.style('width', 3);
+                    });
+                    
+                    cy.on('mouseout', 'node', function(e) {
+                        var node = e.target;
+                        node.style('border-width', '1px');
+                        
+                        // Reset connected edges and nodes
+                        var connectedEdges = node.connectedEdges();
+                        connectedEdges.style('line-color', '#999');
+                        connectedEdges.style('target-arrow-color', '#999');
+                        connectedEdges.style('width', 2);
+                    });
+                });
+            </script>
+        </body>
+        </html>
+        

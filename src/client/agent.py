@@ -36,6 +36,31 @@ from src.client.conversation.message_processor import MessageProcessorConfig
 from src.client.tool_processor import ToolExecutor, ToolExecutionConfig
 from src.client.llm_service import LLMService, RetrySettings
 
+
+"""
+Agent module for orchestrating MCP interactions and LLM processing.
+
+This module provides a Pydantic-integrated Agent to coordinate conversation,
+server connections, tool execution, and workflows.
+"""
+
+import logging
+import asyncio
+from typing import Dict, List, Optional, Any, Union, Sequence, Type, TypeVar, Generic, Protocol, cast
+import uuid
+import time
+from enum import Enum, auto
+
+from traceloop.sdk.decorators import workflow, task
+from traceloop.sdk import Traceloop
+from pydantic import TypeAdapter, ValidationError
+
+from src.utils.decorators import message_processing, server_connection, resource_cleanup
+from src.utils.workflow import Workflow, WorkflowResult
+
+
+
+
 logger = logging.getLogger(__name__)
 
 class ProcessingMode(Enum):
@@ -72,62 +97,110 @@ class Agent:
     """
     
     def __init__(
-        self, 
-        model: str = "google/gemini-2.0-flash-001",
-        agent_settings: Optional[AgentSettings] = None,
-        server_config: Optional[ServerRegistryConfig] = None,
-        llm_retry_settings: Optional[RetrySettings] = None,
-        tool_config: Optional[ToolExecutionConfig] = None
-    ):
+            self, 
+            model: str = "google/gemini-2.0-flash-001",
+            agent_settings: Optional[AgentSettings] = None,
+            server_config: Optional[ServerRegistryConfig] = None,
+            llm_retry_settings: Optional[RetrySettings] = None,
+            tool_config: Optional[ToolExecutionConfig] = None
+        ):
+            """
+            Initialize the MCP client agent
+            
+            Args:
+                model: LLM model identifier to use
+                agent_settings: Optional settings for the agent
+                server_config: Optional configuration for server registry
+                llm_retry_settings: Optional retry settings for LLM calls
+                tool_config: Optional configuration for tool execution
+            """
+            # Use provided settings or create defaults
+            self.settings = agent_settings or AgentSettings()
+            
+            # Initialize components with appropriate configurations
+            self.llm_client = LLMService(model, retry_settings=llm_retry_settings)
+            self.server_manager = ServerRegistry(config=server_config)
+            self.tool_processor = ToolExecutor(self.server_manager, config=tool_config)
+            
+            # Create message processor configuration
+            message_processor_config = MessageProcessorConfig(
+                max_history_length=self.settings.max_history_length,
+                validate_messages=True,
+                trace_content=self.settings.trace_queries
+            )
+            
+            # Initialize conversation manager with configuration
+            self.conversation_manager = Conversation(
+                self.llm_client,
+                self.server_manager,
+                self.tool_processor,
+                message_processor_config
+            )
+            
+            # Create configuration model with validation
+            self.config = AgentConfig(model=model)
+            
+            # Initialize TypeAdapter for ServerInfo validation
+            self.server_info_validator = TypeAdapter(ServerInfo)
+            self.connect_response_validator = TypeAdapter(ConnectResponse)
+            
+            # Initialize workflow registry
+            self.workflows: Dict[str, Type[Workflow]] = {}
+            
+            # Set global association properties for this agent instance
+            Traceloop.set_association_properties({
+                "agent_id": self.settings.agent_id,
+                "model": model,
+                "max_history_length": self.settings.max_history_length,
+                "processing_mode": self.settings.processing_mode.name
+            })
+            
+            logger.info(f"Agent initialized with model: {model}, id: {self.settings.agent_id}")
+
+    def register_workflow(self, workflow_id: str, workflow_cls: Type[Workflow]) -> None:
         """
-        Initialize the MCP client agent
+        Register a workflow class with the agent.
         
         Args:
-            model: LLM model identifier to use
-            agent_settings: Optional settings for the agent
-            server_config: Optional configuration for server registry
-            llm_retry_settings: Optional retry settings for LLM calls
-            tool_config: Optional configuration for tool execution
+            workflow_id: ID to use for the workflow
+            workflow_cls: Workflow class to register
         """
-        # Use provided settings or create defaults
-        self.settings = agent_settings or AgentSettings()
+        self.workflows[workflow_id] = workflow_cls
+        logger.info(f"Registered workflow: {workflow_id}")
+    
+    @task(name="run_workflow")
+    async def run_workflow(self, workflow_id: str, **input_data) -> Any:
+        """
+        Run a registered workflow.
         
-        # Initialize components with appropriate configurations
-        self.llm_client = LLMService(model, retry_settings=llm_retry_settings)
-        self.server_manager = ServerRegistry(config=server_config)
-        self.tool_processor = ToolExecutor(self.server_manager, config=tool_config)
-        
-        # Create message processor configuration
-        message_processor_config = MessageProcessorConfig(
-            max_history_length=self.settings.max_history_length,
-            validate_messages=True,
-            trace_content=self.settings.trace_queries
-        )
-        
-        # Initialize conversation manager with configuration
-        self.conversation_manager = Conversation(
-            self.llm_client,
-            self.server_manager,
-            self.tool_processor,
-            message_processor_config
-        )
-        
-        # Create configuration model with validation
-        self.config = AgentConfig(model=model)
-        
-        # Initialize TypeAdapter for ServerInfo validation
-        self.server_info_validator = TypeAdapter(ServerInfo)
-        self.connect_response_validator = TypeAdapter(ConnectResponse)
-        
-        # Set global association properties for this agent instance
+        Args:
+            workflow_id: ID of the workflow to run
+            **input_data: Input data for the workflow
+            
+        Returns:
+            The workflow result
+            
+        Raises:
+            ValueError: If the workflow is not registered
+        """
+        if workflow_id not in self.workflows:
+            raise ValueError(f"Workflow {workflow_id} not registered")
+            
+        # Track workflow execution
         Traceloop.set_association_properties({
-            "agent_id": self.settings.agent_id,
-            "model": model,
-            "max_history_length": self.settings.max_history_length,
-            "processing_mode": self.settings.processing_mode.name
+            "workflow_id": workflow_id,
+            "workflow_input_keys": list(input_data.keys())
         })
         
-        logger.info(f"Agent initialized with model: {model}, id: {self.settings.agent_id}")
+        workflow_cls = self.workflows[workflow_id]
+        workflow = workflow_cls(self)
+        
+        # Run the workflow and await the result
+        handler = workflow.run(**input_data)
+        result = await handler
+        
+        return result
+    
     
     def get_config(self) -> AgentConfig:
         """
